@@ -66,6 +66,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
         scroll_layout.setAlignment(Qt.AlignTop)
         scroll.setWidget(scroll_content)
+        self._scroll_area = scroll
         self._scroll_layout = scroll_layout
         self._scroll_content = scroll_content
 
@@ -108,11 +109,9 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
     def _scroll_to_bottom(self):
         """Scroll chat area to the bottom."""
-        scroll = self._scroll_content.parentWidget()
-        if scroll:
-            scroll.verticalScrollBar().setValue(
-                scroll.verticalScrollBar().maximum()
-            )
+        scrollbar = self._scroll_area.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.setValue(scrollbar.maximum())
 
     def _set_busy(self, busy: bool):
         """Enable/disable input and update status dot."""

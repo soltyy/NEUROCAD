@@ -66,6 +66,32 @@ def test_settings_command_opens_dialog(qapp):
         mock_get_main.assert_called_once()
 
 
+def test_open_chat_command_imports_panel_lazily(qapp):
+    """OpenChatCommand should resolve get_panel_dock at call time."""
+    mock_dock = MagicMock()
+    with patch("neurocad.ui.panel.get_panel_dock", return_value=mock_dock):
+        from neurocad.InitGui import OpenChatCommand
+
+        cmd = OpenChatCommand()
+        cmd.Activated()
+
+    mock_dock.show.assert_called_once()
+    mock_dock.raise_.assert_called_once()
+
+
+def test_scroll_to_bottom_uses_scroll_area_scrollbar(qapp):
+    """_scroll_to_bottom() should use the QScrollArea scrollbar directly."""
+    dock = CopilotPanel()
+    scrollbar = MagicMock()
+    dock._scroll_area = MagicMock()
+    dock._scroll_area.verticalScrollBar.return_value = scrollbar
+    scrollbar.maximum.return_value = 42
+
+    dock._scroll_to_bottom()
+
+    scrollbar.setValue.assert_called_once_with(42)
+
+
 def test_submit_no_assistant_echo(qapp):
     """_on_submit() does not add an assistant message (inert behavior)."""
     with patch("neurocad.ui.panel.FreeCADGui", MagicMock(), create=True) as mock_gui:

@@ -2,8 +2,6 @@
 
 import FreeCADGui  # type: ignore
 
-from .ui.panel import get_panel_dock
-
 
 class NeuroCadWorkbench(FreeCADGui.Workbench):
     """NeuroCad workbench."""
@@ -20,12 +18,16 @@ class NeuroCadWorkbench(FreeCADGui.Workbench):
 
     def Activated(self):
         """Called when the workbench is activated."""
+        from neurocad.ui.panel import get_panel_dock
+
         dock = get_panel_dock()
         if dock:
             dock.show()
 
     def Deactivated(self):
         """Called when the workbench is deactivated."""
+        from neurocad.ui.panel import get_panel_dock
+
         dock = get_panel_dock(create=False)
         if dock:
             dock.hide()
@@ -45,6 +47,8 @@ class OpenChatCommand:
         }
 
     def Activated(self):
+        from neurocad.ui.panel import get_panel_dock
+
         dock = get_panel_dock()
         if dock:
             dock.show()

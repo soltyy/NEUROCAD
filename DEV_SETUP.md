@@ -51,14 +51,35 @@ export PYTHONPATH="/Applications/FreeCAD.app/Contents/Resources/lib:$PYTHONPATH"
 
 ## 5. Link the mod for FreeCAD (macOS)
 
-FreeCAD looks for mods in `~/Library/Application Support/FreeCAD/Mod/` (macOS). Create a symlink:
+Do not hardcode the mod directory to the legacy unversioned path.
+FreeCAD 1.1 may use a versioned user data directory such as
+`~/Library/Application Support/FreeCAD/v1-1/`.
+
+The reliable rule is: install the mod under `FreeCAD.ConfigGet("UserAppData")/Mod/`.
+
+Typical paths:
+- FreeCAD 1.0.x: `~/Library/Application Support/FreeCAD/Mod/`
+- FreeCAD 1.1.x: `~/Library/Application Support/FreeCAD/v1-1/Mod/`
+
+If you already know your FreeCAD user data directory, create a symlink there:
 
 ```bash
-mkdir -p "$HOME/Library/Application Support/FreeCAD/Mod"
-ln -sf "$(pwd)" "$HOME/Library/Application Support/FreeCAD/Mod/neurocad"
+mkdir -p "$HOME/Library/Application Support/FreeCAD/v1-1/Mod"
+ln -sf "$(pwd)/neurocad" "$HOME/Library/Application Support/FreeCAD/v1-1/Mod/neurocad"
 ```
 
-On Linux, the path is `~/.FreeCAD/Mod/`.
+If `NeuroCad` does not appear in the workbench dropdown, check the actual path from the
+FreeCAD Python console:
+
+```python
+import FreeCAD
+print(FreeCAD.ConfigGet("UserAppData"))
+```
+
+Then link `$(pwd)/neurocad` into `<UserAppData>/Mod/neurocad`.
+
+On Linux, the user dir may also be versioned; use the same `UserAppData` rule instead of
+guessing the path.
 
 ## 6. Running tests
 
@@ -77,6 +98,8 @@ For tests that need a QApplication (UI), `pytest-qt` provides a `qapp` fixture.
 1. Launch FreeCAD (`open /Applications/FreeCAD.app` or start from command line).
 2. Switch to the **NeuroCad** workbench (should appear in the workbench dropdown).
 3. The NeuroCad panel will appear as a dock widget on the right side (lazy‑initialized when the workbench is activated).
+4. Sprint 1 only provides the workbench, dock panel, and snapshot/debug path. Geometry
+   generation and model execution are Sprint 2 functionality.
 
 ## 8. Development workflow
 
@@ -95,7 +118,10 @@ Ensure `PYTHONPATH` includes the FreeCAD bundle library path.
 FreeCAD’s bundled PySide may be PySide2. The `compat.py` shim handles this automatically.
 
 **Dock widget not appearing**  
-Check that `get_panel_dock()` is called in `Activated()` (not `Initialize()`). Verify the symlink points to the correct location.
+Check that `get_panel_dock()` is called in `Activated()` (not `Initialize()`).
+Verify that the symlink points to `<FreeCAD.ConfigGet("UserAppData")>/Mod/neurocad`.
+On FreeCAD 1.1 this is often `~/Library/Application Support/FreeCAD/v1-1/Mod/neurocad`,
+not the legacy unversioned path.
 
 **Tests fail with `QApplication` errors**  
 Run tests with `QT_QPA_PLATFORM=offscreen pytest ...` or ensure a virtual display is available.

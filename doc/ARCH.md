@@ -1040,7 +1040,9 @@ dev = ["pytest>=8", "pytest-qt", "ruff", "mypy"]
 # Платформа: macOS arm64, FreeCAD 1.0.2, Python 3.11.14 (bundled)
 # PySide6 и shiboken6 — из bundle FreeCAD, не через pip
 # PYTHONPATH: /Applications/FreeCAD.app/Contents/Resources/lib:$PYTHONPATH
-# Symlink: ~/Library/Application Support/FreeCAD/Mod/neurocad → ./neurocad
+# Symlink: <FreeCAD.ConfigGet("UserAppData")>/Mod/neurocad → ./neurocad
+# FreeCAD 1.1 on macOS may resolve this to:
+# ~/Library/Application Support/FreeCAD/v1-1/Mod/neurocad
 ```
 
 ---
