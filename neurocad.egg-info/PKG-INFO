@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: neurocad
+Version: 0.1.0
+Summary: AI‑powered CAD assistant for FreeCAD
+Author: NeuroCad Team
+License: MIT
+Project-URL: Homepage, https://github.com/neurocad/neurocad
+Project-URL: Source, https://github.com/neurocad/neurocad
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Manufacturing
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: CAD
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.7
+Requires-Dist: keyring>=25.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-qt; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
