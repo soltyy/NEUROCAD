@@ -19,7 +19,7 @@ import logging
 from neurocad.ui.panel import CopilotPanel
 
 
-class CadCopilotWorkbench:
+class CadCopilotWorkbench(FreeCADGui.Workbench if FreeCADGui is not None else object):
     """
     FreeCAD workbench that provides the NeuroCad Copilot panel.
 
@@ -86,13 +86,28 @@ def register_workbench():
     This function is called from InitGui.py when FreeCAD starts.
     It does nothing if FreeCADGui is not available (e.g., in console mode).
     """
+    print("[NeuroCad] Attempting to register workbench")
     if FreeCADGui is not None:
         try:
+            # Check if already registered (idempotent)
+            workbenches = FreeCADGui.listWorkbenches()
+            if "CadCopilotWorkbench" in workbenches:
+                print("[NeuroCad] Workbench already registered, skipping.")
+                logging.debug("[NeuroCad] Workbench already registered.")
+                return
+        except Exception:
+            # listWorkbenches may fail in some contexts; treat as not registered
+            pass
+
+        try:
             FreeCADGui.addWorkbench(CadCopilotWorkbench)
+            print("[NeuroCad] Workbench registered successfully.")
             logging.debug("[NeuroCad] Workbench registered.")
         except Exception as e:
+            print(f"[NeuroCad] ERROR: Failed to register workbench: {e}")
             logging.error(f"[NeuroCad] Failed to register workbench: {e}")
     else:
+        print("[NeuroCad] FreeCADGui not available; workbench registration skipped.")
         logging.debug(
             "[NeuroCad] FreeCADGui not available; workbench registration skipped."
         )

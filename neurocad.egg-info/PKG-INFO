@@ -11,6 +11,7 @@ Classifier: License :: OSI Approved :: MIT License
 Classifier: Programming Language :: Python :: 3.11
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: pydantic>=2.7
 Requires-Dist: keyring>=25.0
 Provides-Extra: dev
@@ -18,3 +19,60 @@ Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-qt>=4.0; extra == "dev"
 Requires-Dist: ruff>=0.1.0; extra == "dev"
 Requires-Dist: mypy>=1.0; extra == "dev"
+Dynamic: license-file
+
+# NeuroCad
+
+AI-powered CAD assistant for FreeCAD.
+
+## Overview
+
+NeuroCad is a FreeCAD workbench that integrates large language models (LLMs) to assist with CAD tasks. It provides a chat interface, code execution in a sandboxed environment, and geometry validation.
+
+## UI Components (NC‑DEV‑UI‑001)
+
+The workbench includes the following UI components, implemented in **NC‑DEV‑UI‑001**:
+
+- **CadCopilotWorkbench** – A FreeCAD workbench that registers the NeuroCad panel and manages its lifecycle.
+- **CopilotPanel** – A dockable widget (`QDockWidget`) with a chat‑style interface, featuring:
+  - Text input with Send button and Enter‑key support
+  - “Show Snapshot” button for capturing the current view
+  - Status indicator (`StatusDot`) showing idle/thinking/error states
+  - Scrollable area for message bubbles
+  - Signals `message_submitted` and `snapshot_requested` for integration with backend logic
+- **MessageBubble** – A styled chat bubble (`QFrame`) that adapts its appearance (color, alignment) based on the message role (`user`/`assistant`/`system`).
+- **StatusDot** – A small circular widget that visually reflects the current processing state (gray = idle, yellow = thinking, red = error).
+
+All components are fully unit‑tested with `pytest‑qt`. See [`tests/test_workbench.py`](tests/test_workbench.py) and [`tests/test_ui.py`](tests/test_ui.py).
+
+## Getting Started
+
+Refer to [DEV_SETUP.md](DEV_SETUP.md) for detailed development environment setup instructions.
+
+### Quick start (for developers)
+
+1. Clone the repository.
+2. Create a virtual environment with Python 3.11.
+3. Install the package in development mode: `pip install -e ".[dev]"`
+4. Set up `PYTHONPATH` to include FreeCAD's bundled libraries.
+5. Symlink the module into FreeCAD's Mod directory.
+6. Run tests: `QT_QPA_PLATFORM=offscreen pytest --tb=short -v`
+
+## Documentation
+
+- [ARCH.md](doc/ARCH.md) – high‑level architecture and module structure.
+- [PRD.md](doc/PRD.md) – product requirements and vision.
+- Sprint plans: [SPRINT_1.md](doc/SPRINT_1.md), [SPRINT_2.md](doc/SPRINT_2.md), [SPRINT_3.md](doc/SPRINT_3.md).
+
+## Development
+
+Follow the coding style outlined in `.roo/rules/10-coding-style.md`. Run linting and type checks with:
+
+```bash
+ruff check .
+mypy .
+```
+
+## License
+
+NeuroCad is MIT licensed. See [LICENSE](LICENSE) for details.

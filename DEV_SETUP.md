@@ -56,7 +56,7 @@ FreeCAD loads external modules from `~/Library/Application Support/FreeCAD/Mod/`
 
 ```bash
 mkdir -p ~/Library/Application\ Support/FreeCAD/Mod/
-ln -sf "$(pwd)" ~/Library/Application\ Support/FreeCAD/Mod/neurocad
+ln -sf "$(pwd)/neurocad" ~/Library/Application\ Support/FreeCAD/Mod/neurocad
 ```
 
 After restarting FreeCAD, the NeuroCad workbench should appear in the workbench dropdown.
@@ -85,10 +85,13 @@ FreeCAD includes a Python console (**View → Panels → Python console**) where
 import neurocad
 print(neurocad.__file__)  # Should point to the symlinked location
 
+# Importing neurocad automatically registers the workbench if FreeCADGui is available.
+# You can verify the registration by checking the workbench list.
 import FreeCADGui
 workbenches = FreeCADGui.listWorkbenches()
-print("NeuroCad" in workbenches)  # Should print True
+print("CadCopilotWorkbench" in workbenches)  # Should print True (key is the class name)
 
+# The following call is idempotent and safe; it will not double‑register.
 from neurocad.workbench import register_workbench
 register_workbench()  # This will log a debug message if registration succeeds
 ```
@@ -137,7 +140,7 @@ QT_QPA_PLATFORM=offscreen pytest --tb=short -v
 - Set `QT_QPA_PLATFORM=offscreen` before running pytest.
 
 ### Symlink not working
-- Ensure the symlink points to the repository root, not a subdirectory.
+- Ensure the symlink points to the `neurocad/` subdirectory (the mod root), not the repository root.
 - FreeCAD may cache workbenches; restart FreeCAD completely.
 
 ## 9. Next steps

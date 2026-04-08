@@ -1,3 +1,5 @@
+LICENSE
+README.md
 pyproject.toml
 neurocad/InitGui.py
 neurocad/__init__.py
@@ -24,3 +26,5 @@ neurocad/ui/__init__.py
 neurocad/ui/panel.py
 neurocad/ui/settings.py
 neurocad/ui/widgets.py
+tests/test_ui.py
+tests/test_workbench.py
