@@ -1,21 +1,70 @@
 """Adapter registry and factory."""
 
+import os
 from typing import Any
 
-from .base import LLMAdapter
+try:
+    import keyring
+except ImportError:
+    keyring = None  # type: ignore[assignment]
 
-ADAPTERS: dict[str, LLMAdapter] = {}
+from .anthropic import AnthropicAdapter
+from .base import LLMAdapter
+from .openai import OpenAIAdapter
+
+ADAPTERS: dict[str, type[LLMAdapter]] = {
+    "openai": OpenAIAdapter,
+    "anthropic": AnthropicAdapter,
+}
+
+
+def _resolve_api_key(provider: str) -> str:
+    """Retrieve API key from environment or keyring.
+
+    Precedence:
+    1. Environment variable NEUROCAD_API_KEY_{PROVIDER_UPPERCASE}
+    2. Keyring entry "neurocad", provider
+    3. Raise ValueError with clear instructions.
+    """
+    env_var = f"NEUROCAD_API_KEY_{provider.upper()}"
+    key = os.getenv(env_var)
+    if key:
+        return key
+    if keyring is not None:
+        key = keyring.get_password("neurocad", provider)
+        if key:
+            return key
+        keyring_hint = "or store it in the system keyring"
+    else:
+        keyring_hint = (
+            "or install the `keyring` package in the FreeCAD Python environment to store it"
+        )
+    raise ValueError(
+        f"No API key found for provider '{provider}'. "
+        f"Set the {env_var} environment variable {keyring_hint}."
+    )
 
 
 def load_adapter(config: dict[str, Any]) -> LLMAdapter:
     """Load adapter based on config, resolving API key from environment/keyring."""
-    # Implementation will be added in Sprint 2
-    raise NotImplementedError("load_adapter not implemented")
+    provider = config.get("provider", "openai")
+    adapter_cls = ADAPTERS.get(provider)
+    if adapter_cls is None:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = _resolve_api_key(provider)
+    adapter_config = {k: v for k, v in config.items() if k != "provider"}
+    adapter_config["api_key"] = api_key
+    return adapter_cls(**adapter_config)
 
 
 def load_adapter_with_session_key(
     config: dict[str, Any], session_key: str
 ) -> LLMAdapter:
     """Load adapter using a temporary session key (does not write to keyring)."""
-    # Implementation will be added in Sprint 2
-    raise NotImplementedError("load_adapter_with_session_key not implemented")
+    provider = config.get("provider", "openai")
+    adapter_cls = ADAPTERS.get(provider)
+    if adapter_cls is None:
+        raise ValueError(f"Unknown provider: {provider}")
+    adapter_config = {k: v for k, v in config.items() if k != "provider"}
+    adapter_config["api_key"] = session_key
+    return adapter_cls(**adapter_config)

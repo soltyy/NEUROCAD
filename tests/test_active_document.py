@@ -1,19 +1,16 @@
-"""Test GUI‑aligned active document resolution."""
+"""Test GUI-aligned active document resolution."""
 
+import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from neurocad.core.active_document import get_active_document
 
 
 def test_no_freecad():
     """Without FreeCAD, returns None."""
     with patch.dict("sys.modules", {"FreeCAD": None, "FreeCADGui": None}):
-        # Re‑import to pick up missing modules
-        import importlib
-
         import neurocad.core.active_document
+
         importlib.reload(neurocad.core.active_document)
         result = neurocad.core.active_document.get_active_document()
         assert result is None
@@ -29,9 +26,8 @@ def test_with_gui_active_document():
         patch("FreeCADGui.ActiveDocument", mock_gui_doc),
         patch("FreeCAD.getDocument", return_value=mock_fc_doc) as mock_get,
     ):
-        import importlib
-
         import neurocad.core.active_document
+
         importlib.reload(neurocad.core.active_document)
         result = neurocad.core.active_document.get_active_document()
         mock_get.assert_called_once_with("TestDoc")
@@ -43,9 +39,8 @@ def test_fallback_to_freecad_active():
     with patch("FreeCADGui.ActiveDocument", None):
         mock_fc_doc = MagicMock()
         with patch("FreeCAD.ActiveDocument", mock_fc_doc):
-            import importlib
-
             import neurocad.core.active_document
+
             importlib.reload(neurocad.core.active_document)
             result = neurocad.core.active_document.get_active_document()
             assert result is mock_fc_doc
@@ -53,9 +48,48 @@ def test_fallback_to_freecad_active():
 
 def test_fallback_to_none():
     """If both are missing, return None."""
-    with patch("FreeCADGui.ActiveDocument", None), patch("FreeCAD.ActiveDocument", None):
-        result = get_active_document()
+    with patch("FreeCADGui.ActiveDocument", None), patch("FreeCAD.ActiveDocument", None), patch(
+        "FreeCAD.listDocuments", return_value={}
+    ):
+        import neurocad.core.active_document
+
+        importlib.reload(neurocad.core.active_document)
+        result = neurocad.core.active_document.get_active_document()
         assert result is None
+
+
+def test_gui_document_fallback_when_getdocument_fails():
+    """If FreeCAD.getDocument() fails, return gui_doc.Document directly."""
+    mock_gui_doc = MagicMock()
+    mock_fc_doc = MagicMock()
+    mock_fc_doc.Name = "TestDoc"
+    mock_gui_doc.Document = mock_fc_doc
+
+    with (
+        patch("FreeCADGui.ActiveDocument", mock_gui_doc),
+        patch("FreeCAD.getDocument", side_effect=RuntimeError("boom")),
+    ):
+        import neurocad.core.active_document
+
+        importlib.reload(neurocad.core.active_document)
+        result = neurocad.core.active_document.get_active_document()
+        assert result is mock_fc_doc
+
+
+def test_list_documents_fallback():
+    """If both GUI and ActiveDocument are unavailable, use listDocuments()."""
+    mock_fc_doc = MagicMock()
+    mock_fc_doc.Name = "FallbackDoc"
+    with (
+        patch("FreeCADGui.ActiveDocument", None),
+        patch("FreeCAD.ActiveDocument", None),
+        patch("FreeCAD.listDocuments", return_value={"FallbackDoc": mock_fc_doc}),
+    ):
+        import neurocad.core.active_document
+
+        importlib.reload(neurocad.core.active_document)
+        result = neurocad.core.active_document.get_active_document()
+        assert result is mock_fc_doc
 
 
 

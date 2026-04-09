@@ -1,5 +1,5 @@
-# NeuroCad · Sprint Plans v0.3
-**Дата:** 2026-04-08 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны
+# NeuroCad · Sprint Plans v0.6
+**Дата:** 2026-04-09 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 ---
 
@@ -72,20 +72,42 @@ Streaming UI (ProgressBar, chunk display) — в Sprint 3. Здесь тольк
 
 ---
 
-# Sprint 3 — Streaming UI + Settings + Exporter + Benchmark + Dog-food
-**Нед. 5–6 · Python 3.11 · FreeCAD 1.0+**
+# Актуальное состояние на 2026-04-09
 
-**Предусловие: Sprint 2 DoD закрыт полностью.**
+1. **Sprint 1**: функционально достигнут. Workbench, singleton dock, snapshot/debug path и базовая конфигурация работают в FreeCAD 1.1.
+2. **Sprint 2 / 2.1**: закрыт. End-to-end path стабилизирован на текущей архитектуре; автоматизированные gate'ы `.venv/bin/ruff check .`, `.venv/bin/mypy .`, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -v` подтверждены.
+3. **Sprint 3**: завершён как feature + evidence sprint. Settings и Export реализованы; ручной benchmark во FreeCAD принят как финальный источник фактов для планирования следующего этапа. Главный подтверждённый провал — bucket `unsupported-requests`: система недостаточно надёжно отказывает на неподдержанных запросах.
+4. В коде есть осознанные отклонения от исходного Sprint 2 плана, и они должны считаться **новой нормой документа**, а не временным расхождением:
+   - dispatch в main thread сделан через `QObject + Signal(..., Qt.QueuedConnection)`, а не через `QTimer.singleShot(0, ...)`;
+   - `executor.execute()` выполняет код синхронно в main thread; внутренний `threading.Thread` для `exec()` убран как небезопасный для FreeCAD document mutations;
+   - hard timeout перенесён на LLM transport / worker handoff / UI watchdog, а не на сам `exec()` внутри FreeCAD.
+
+---
+
+# Sprint 2.1 — Stabilization Gate для завершения Sprint 2
+**Нед. 5 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed
+
+**Предусловие: текущий end-to-end path работает на простых запросах, архитектурный базис Sprint 2 не откатывается.**
 
 ## Цель
 
-Продукт готов к dog-food тесту: streaming через Qt сигналы без processEvents, ProgressBar, Settings UI с двумя путями сохранения ключа, экспорт STEP/STL, benchmark 50 задач.
+Закрыть именно те хвосты Sprint 2, которые можно безопасно доделать в рамках текущей архитектуры: улучшить grounded generation, убрать слепые retry, стабилизировать diagnostics и формально закрыть release gate Sprint 2 без добавления нового большого функционала.
+
+## Принципы Sprint 2.1
+
+1. Не менять main-thread семантику выполнения FreeCAD-кода.
+2. Не возвращаться к `QTimer.singleShot` как основному dispatcher.
+3. Не добавлять streaming UI, exporter, benchmark и dog-food в этот спринт.
+4. Не расширять capability scope без теста и подтверждённого существования FreeCAD API.
+5. Любая правка должна либо снижать вероятность зависания/галлюцинации, либо ничего не менять в runtime path.
 
 **Rolling Plan (старт)**
 ```
-1. NC-DEV-UI-003      / Developer / Settings UI + ProgressBar + streaming UI  / planned
-2. NC-DEV-CORE-005    / Developer / Streaming в LLMWorker + Exporter           / planned
-3. NC-DEV-TEST-001    / Developer / Benchmark                                   / planned
+1. NC-DEV-CORE-003A   / Developer / Prompt grounding + supported API contract   / completed
+2. NC-DEV-CORE-003B   / Developer / Retry guardrails + error classification      / completed
+3. NC-DEV-UI-002A     / Developer / Release-safe diagnostics in panel            / completed
+4. NC-DEVOPS-INFRA-003A / DevOps   / Final verification for Sprint 2 semantics   / completed
 ```
 
 ---
@@ -94,25 +116,129 @@ Streaming UI (ProgressBar, chunk display) — в Sprint 3. Здесь тольк
 
 | Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
 |---|---|---|---|---|---|---|
-| **NC-DEV-UI-003** | Developer | 1 | Settings UI + ProgressBar + chunk display в панели | settings.py (полный), widgets.py (ProgressBar), panel.py (обновлён), test_config.py, test_adapters.py | Save: ключ в keyring, в config.json отсутствует; Use once: keyring не модифицируется; Base URL disabled для anthropic/openai; смена провайдера → self._adapter пересоздаётся без перезапуска FreeCAD; невалидный ключ → QMessageBox не краш; ProgressBar.set_attempt(n,mx) показывает "Попытка N/M"; на 1й попытке — spinner без текста; StatusDot и ProgressBar из одного _set_busy/_on_attempt | `TASK CODE: NC-DEV-UI-003` / ui/settings.py: SettingsDialog(QDialog): _on_save(): config.save(cfg без api_key)+save_api_key(provider,key)+self._adapter_ref[0]=registry.load_adapter(config.load())+self.accept(); _on_use_once(): self._adapter_ref[0]=registry.load_adapter_with_session_key(cfg,key)+self.accept(); принимает ссылку на adapter (list wrapper) для обновления в panel; Base URL QLineEdit disabled для anthropic/openai enabled для остальных; невалидный ключ → QMessageBox.warning не краш; все импорты через compat / ui/widgets.py — добавить ProgressBar(QWidget): set_state(Literal["idle","thinking","error"]); set_attempt(attempt:int,max_attempts:int) показывает "Попытка N/M"; на 1й попытке без текста — только spinner/анимация; при error — красный текст / ui/panel.py: добавить self.progress_bar = ProgressBar() в _build_ui; _on_attempt(n,mx): progress_bar.set_attempt(n,mx); _set_busy(busy): ... progress_bar.set_state("thinking" if busy else "idle"); _on_worker_done(result): state="idle" if result.ok else "error"; status_dot.set_state(state); progress_bar.set_state(state); _set_busy(False); StatusDot и ProgressBar управляются из _set_busy и _on_worker_done — из одной точки / _on_chunk(chunk): теперь отображает chunk в bubble (уже есть) — убедиться что bubble.append_text вызывается / НЕ делать: streaming путь в LLMWorker (NC-DEV-CORE-005), exporter / Ответ без TASK CODE = невалиден |
-| **NC-DEV-CORE-005** | Developer | 1 | Streaming в LLMWorker + core/exporter.py + Export кнопка | worker.py (обновлён), exporter.py, panel.py (Export кнопка), test_exporter.py | Streaming: LLMWorker использует adapter.stream() когда callbacks.on_chunk передан; on_chunk вызывается на каждый chunk через QTimer.singleShot; UI не фризит; rollback работает в том же flow; export(step) и export(stl) создают валидные файлы; пустой список → ValueError; неподдерживаемый формат → ValueError; Part.OCCError перехватывается | `TASK CODE: NC-DEV-CORE-005` / core/worker.py: обновить _run(): if adapter имеет stream: использовать adapter.stream(messages,system) в цикле; каждый chunk → _schedule_main(on_chunk,chunk); накопить chunks → extract_code("".join(chunks)); затем _request_exec(code,attempt); если stream недоступен (полный complete()) — как раньше / core/exporter.py по ARCH v0.3: SUPPORTED={"step","stl"}; export(doc,object_names,path): try import Part; Path(path); fmt; shapes=[...только не-null Shape...]; if not shapes: ValueError; Part.makeCompound(shapes); try compound.exportStep(str(path)) / exportStl(str(path),0.01); except Part.OCCError: raise RuntimeError / Export кнопка в panel.py: QPushButton("Export"); clicked → QFileDialog.getSaveFileName(filter="STEP (*.step);;STL (*.stl)"); exporter.export(doc, all_object_names, path) / test_exporter.py: mock Part.makeCompound; test_step; test_stl; test_empty_raises; test_unsupported_raises / Ответ без TASK CODE = невалиден |
-| **NC-DEV-TEST-001** | Developer | 2 | tests/benchmark.py: 50 задач | benchmark.py, benchmark_results.json, отчёт | Benchmark без краша на 50 задачах; результаты в json; success rate по 3 bucket + p90 latency + rollback count; простые ≥80% с 1й; средние ≥70% за ≤3; не в pytest suite | `TASK CODE: NC-DEV-TEST-001` / tests/benchmark.py: @dataclass BenchmarkCase(prompt,expected_type,max_retries,latency_p90_ms); @dataclass BenchmarkResult(case,ok,attempts,latency_ms,geometry_valid,rollback_triggered,error|None); run_benchmark(adapter,doc,cases)→list[BenchmarkResult]: для каждого case — agent.run(callbacks=None), замер времени, проверка geometry_valid, rollback_triggered; dataset: 20 простых (box/cylinder/sphere/cone/placement)/20 средних (cut/fuse/fillet/chamfer/hole)/10 сложных (compound/shell/loft); результаты → benchmark_results.json; итоговый print-отчёт: success rate по bucket, p90 latency, rollback count / Запускается вручную: python tests/benchmark.py — требует реального LLM ключа и FreeCAD; НЕ включать в pytest / Ответ без TASK CODE = невалиден |
-| **NC-PM-DOG-001** | PM | 3 | Dog-food тест: ручная сессия | Закрытый чеклист + метрики | Все 8 пунктов пройдены; метрики зафиксированы | (1) Открыть FreeCAD, активировать NeuroCad (2) Settings UI → Save path (3) Создать корпус 50×30×10мм с двумя отверстиями через промпт (4) Фаска 1мм на верхних рёбрах через промпт (5) Намеренно некорректный промпт → rollback подтверждён (6) Сменить провайдера → Use once → работает без перезапуска (7) Export STEP и STL (8) Открыть STEP в FreeCAD / KiCad — геометрия корректна. Зафиксировать: число промптов, retry, оценка качества по провайдерам |
-| **NC-DEVOPS-INFRA-004** | DevOps | 3 | Финальный CI-прогон Sprint 3 | stdout, PASS/FAIL | ruff/mypy/pytest чистые; benchmark не в pytest | `TASK CODE: NC-DEVOPS-INFRA-004` / ruff check .; mypy .; pytest --tb=short -v / benchmark.py НЕ включать / PASS если всё чисто / Ответ без TASK CODE = невалиден |
-| **NC-PM-REVIEW-003** | PM | 4 | DoD-чеклист: 15 пунктов | Закрытый чеклист | Все 15 approved | (1) Settings UI Save → keyring, Use once → не пишет (2) Смена провайдера без перезапуска FreeCAD (3) Streaming: on_chunk через QTimer.singleShot, UI не фризит (4) ProgressBar spinner на 1й попытке, "Попытка N/M" при retry (5) StatusDot и ProgressBar из одной точки управления (6) Input disabled во время выполнения (7) Export STEP/STL валидные файлы (8) Part.OCCError перехватывается, не краш (9) Benchmark 50 задач без краша (10) benchmark_results.json создан (11) Отчёт: success rate по 3 bucket + p90 latency + rollback count (12) Простые ≥80% с 1й попытки (13) Средние ≥70% за ≤3 попытки (14) ruff/mypy/pytest чистые (15) Dog-food чеклист пройден |
+| **NC-DEV-CORE-003A** | Developer | 1 | Grounded prompt для закрытия хвоста Sprint 2 | prompt.py, defaults.py, context.py, tests/test_agent.py | `build_system()` использует snapshot документа; prompt явно перечисляет доступные модули и поддержанные операции Sprint 2.1; prompt запрещает `FreeCADGui`, `import`, выдуманные `Part.make*` API вне подтверждённого списка; простой запрос по-прежнему проходит; unsupported high-level запрос не ухудшает документ | `TASK CODE: NC-DEV-CORE-003A` / Не менять executor или worker. Обновить `core/prompt.py`, чтобы `build_system(snap)` включал компактный snapshot активного документа, активный объект и whitelist поддержанных операций текущего релизного подмножества: `Part.makeBox`, `makeCylinder`, `makeSphere`, `makeCone`, placement, простые boolean (`cut/fuse/common`) только если реально уже поддержаны текущим кодом и тестами. Обновить `config/defaults.py`: запретить многоблочный ответ, imports, `FreeCADGui`, unsupported `Part.make*` методы. `core/context.py`: убедиться, что snapshot для prompt компактный и не шумный. Добавить тесты: system prompt содержит snapshot; unsupported API не попадает в поддержанный whitelist. / НЕ делать: streaming, settings UI, exporter |
+| **NC-DEV-CORE-003B** | Developer | 1 | Retry guardrails и классификация ошибок без смены архитектуры | agent.py, executor.py, tests/test_agent.py, tests/test_executor.py | Ошибки `Blocked token ...` и `module 'Part' has no attribute ...` классифицируются отдельно; такие ошибки не вызывают бессмысленный полный retry тем же классом решения; feedback в history содержит короткую конкретную причину; `agent.run()` не уходит в деградацию на 3 одинаковые неудачные попытки; простые успешные кейсы не регрессируют | `TASK CODE: NC-DEV-CORE-003B` / Сохранить текущий main-thread exec и `AgentCallbacks`. В `core/executor.py` добавить безопасное распознавание unsupported attribute path (`module 'Part' has no attribute ...`, аналогичные ошибки для whitelist модулей). В `core/agent.py` нормализовать ошибки минимум в категории: `blocked_token`, `unsupported_api`, `validation`, `llm_transport`, `timeout`, `runtime`. Для `blocked_token` и `unsupported_api` делать направленный feedback в history и не повторять слепо тот же паттерн. Для транспортных и timeout ошибок допустим ограниченный retry. Не добавлять новый concurrency path. |
+| **NC-DEV-UI-002A** | Developer | 2 | Привести диагностику панели к release-safe виду | panel.py, debug.py, widgets.py, tests/test_panel.py | Пользователь в панели видит короткий статус, а не поток сырых `[debug] ...`; подробная трассировка остаётся в логах; watchdog сохраняется; busy-state корректно снимается при timeout/error; UI не теряет текущую работоспособность на простых кейсах | `TASK CODE: NC-DEV-UI-002A` / Не трогать contract `panel -> worker -> on_exec_needed -> receive_exec_result`. В `ui/panel.py` заменить текущие debug bubbles на компактные пользовательские статусы (`Request sent`, `Retrying`, `Execution failed`, `Unsupported operation`, `Timed out`). Подробный trace оставить только через `core/debug.py` в console/report view. Не внедрять ещё `SettingsDialog`, `ProgressBar`, streaming bubbles. |
+| **NC-DEVOPS-INFRA-003A** | DevOps | 3 | Финальная верификация Sprint 2 после стабилизации | stdout, PASS/FAIL, короткий release note | `ruff/mypy/pytest` чистые; smoke-тест на простые supported запросы зелёный; regression-тесты на blocked token и unsupported API зелёные; документ Sprint 2 можно считать закрытым на уровне текущей архитектуры | `TASK CODE: NC-DEVOPS-INFRA-003A` / Прогнать `ruff check .`, `mypy .`, `pytest --tb=short -v`. Отдельно подтвердить вручную или smoke-тестом: (1) `Создай куб 10x10x10 мм` успешно создаёт объект; (2) `создай шестерню` даёт controlled failure без порчи документа; (3) timeout path снимает busy-state. / НЕ делать: benchmark, dog-food |
+| **NC-PM-REVIEW-002A** | PM | 4 | DoD-чеклист Sprint 2.1 / closure Sprint 2 | Закрытый чеклист | Все 10 approved | (1) `build_system()` использует snapshot документа (2) Prompt содержит явный supported scope (3) `FreeCADGui`/`import`/unsupported `Part.make*` явно не поощряются prompt-ом (4) unsupported API классифицируется отдельно от общего runtime error (5) blocked token path безопасен (6) main-thread exec semantics не изменены (7) dispatcher остаётся signal/queued-connection (8) panel release mode не заспамлена debug bubbles (9) простой supported кейс проходит (10) unsupported кейс даёт safe-fail без порчи документа |
 
-**Правила останова Sprint 3:** processEvents() в streaming path → rejected / exec вне main thread → rejected / benchmark в pytest → остановить / StatusDot и ProgressBar из разных точек → rejected / убирает rollback или AgentCallbacks → rejected / Addon Manager/PartDesign/мультимодальность → post-MVP, стоп / Ответ без TASK CODE = невалиден.
+**Факт закрытия Sprint 2.1:**
+- `NC-DEV-CORE-003A` — completed
+- `NC-DEV-CORE-003B` — completed
+- `NC-DEV-UI-002A` — completed
+- `NC-DEVOPS-INFRA-003A` — completed
+- `NC-PM-REVIEW-002A` — completed
+- Автоматизированная верификация:
+  - `.venv/bin/ruff check .` → clean
+  - `.venv/bin/mypy .` → clean
+  - `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -v` → `95 passed, 1 skipped, 1 xfailed`
+
+**Правила останова Sprint 2.1:** любое изменение, возвращающее `exec()` в background thread → rejected / возврат к `QTimer.singleShot` как основному dispatcher → rejected / добавление streaming/export/settings вместо стабилизации Sprint 2 → stop / расширение поддержанного API без теста и подтверждения существования метода в FreeCAD → rejected / ответ без TASK CODE = невалиден.
 
 ---
 
-## Сводная таблица: что изменилось от v0.1 → v0.3
+# Sprint 3 — Settings + Export + Benchmark + Dog-food
+**Нед. 5–7 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (manual benchmark findings accepted as final input for next planning step)
 
-| Компонент | v0.1 (оригинал) | v0.3 (финал) |
+**Предусловие: Sprint 2.1 закрыт; release gate Sprint 2 формально пройден на текущей архитектуре.**
+
+## Цель
+
+Довести продукт до dog-food уровня без архитектурного отката: реализовать полноценный Settings UI, экспорт STEP/STL, benchmark по реальному capability scope и ручную dog-food сессию. Core stabilization из Sprint 2.1 считается базой; дополнительные изменения в prompt/agent допускаются только как точечный hardening по итогам benchmark, а не как основной scope спринта. Streaming остаётся вторичным tail work и не является входным критерием релиза.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-UI-003      / Developer / Settings UI + release-grade status/progress        / planned
+2. NC-DEV-CORE-007    / Developer / Exporter + optional streaming tail work            / planned
+3. NC-DEV-TEST-001    / Developer / Benchmark + supported-capability dataset           / planned
+4. NC-DEV-CORE-008    / Developer / Residual hardening from benchmark findings         / planned
+5. NC-PM-DOG-001      / PM        / Dog-food after benchmark gate                      / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-UI-003** | Developer | 1 | Settings UI + release-grade status/progress surface | settings.py, widgets.py, panel.py, test_config.py, test_panel.py, test_adapters.py | Save: ключ в keyring, в config.json отсутствует; если `keyring` недоступен, UI предлагает Use once/session path без крэша; Use once не модифицирует keyring; смена провайдера/модели/base_url пересоздаёт `self._adapter` без перезапуска FreeCAD; ProgressBar показывает attempt/status из единой точки управления; текущие debug messages не дублируются как обычные chat bubbles в release mode | `TASK CODE: NC-DEV-UI-003` / ui/settings.py: полноценный `SettingsDialog(QDialog)` с provider/model/base_url/api_key, кнопками `Save` и `Use once`; `Save` использует `config.save()` + `save_api_key()` если keyring доступен, иначе показывает контролируемое предупреждение. `Use once` вызывает `registry.load_adapter_with_session_key(...)` и не пишет ключ. panel.py: добавить открытие Settings из существующей команды, прогресс/статус привести к одной модели состояния (`idle/thinking/error` + attempt). widgets.py: добавить `ProgressBar(QWidget)` или эквивалентный status widget без processEvents. / НЕ делать: benchmark, exporter |
+| **NC-DEV-CORE-007** | Developer | 2 | Exporter + optional streaming tail work | exporter.py, panel.py, tests/test_exporter.py, tests/test_worker.py | Export STEP/STL создаёт валидные файлы из выбранных объектов или всех новых объектов последнего успешного запуска; пустой набор → ValueError; unsupported format → ValueError; `Part.OCCError` ловится и преобразуется в RuntimeError; streaming разрешён только как tail work после зелёного exporter/settings gate и только через существующий dispatcher, без `processEvents()` | `TASK CODE: NC-DEV-CORE-007` / core/exporter.py: `SUPPORTED={"step","stl"}`; фильтр по объектам с валидным `Shape`; compound export; нормализованные ошибки. panel.py: добавить кнопку `Export` и выбор формата через `QFileDialog`. Streaming не является deliverable Sprint 3 и допускается только как optional tail work после завершения settings/export/benchmark, через текущий dispatcher (`Signal + QueuedConnection`) и без изменения main-thread exec semantics. / НЕ делать: dog-food до прохождения benchmark |
+| **NC-DEV-TEST-001** | Developer | 3 | Benchmark + supported-capability dataset | tests/benchmark.py, benchmark_results.json, короткий отчёт | Benchmark запускается вне pytest и меряет не только успех, но и безопасный отказ. Dataset делится на 3 bucket: `supported-simple`, `supported-composite`, `unsupported-requests`. Для unsupported bucket успехом считается корректный controlled failure без порчи документа. Целевые метрики: simple ≥90% c 1-й попытки; composite ≥70% ≤3 попыток; unsupported safe-fail ≥95%; p90 latency и rollback count сохраняются в json | `TASK CODE: NC-DEV-TEST-001` / tests/benchmark.py: зафиксировать датасет под реальный capability scope Sprint 3. 20 simple: box/cylinder/sphere/cone/placement. 20 composite: cut/fuse/common/hole через boolean/fillet-chamfer только если поддержка реально доказана тестом. 10 unsupported: gear/involute gear/GUI calls/imports/ambiguous high-level prompts. Результаты сериализуются в `benchmark_results.json`; печатается итоговый отчёт по 3 bucket. Benchmark запускается вручную и не включается в pytest. |
+| **NC-DEV-CORE-008** | Developer | 4 | Residual hardening from benchmark findings | prompt.py, agent.py, executor.py, panel.py, tests/test_agent.py, tests/test_executor.py | В scope только точечные исправления, подтверждённые benchmark/dog-food данными; не допускается повторное расширение спринта в отдельный core-эпик; residual fixes не ломают текущий release-safe UX и не меняют thread model | `TASK CODE: NC-DEV-CORE-008` / Разрешены только адресные правки по итогам `NC-DEV-TEST-001`: уточнение whitelist поддержанных операций, более точная классификация ошибок, точечное сужение retry policy, уточнение пользовательских статусов. Запрещено: новый concurrency path, возврат к broad prompt, расширение capability без теста, превращение residual task в новый "Sprint 2.2". |
+| **NC-PM-DOG-001** | PM | 5 | Dog-food тест: ручная сессия после benchmark gate | Закрытый чеклист + метрики | Dog-food разрешён только если NC-DEV-TEST-001 достиг целевых метрик. Все 8 пунктов пройдены; отдельно фиксируются prompts, retry count, safe-fail кейсы и оценка провайдера | (1) Открыть FreeCAD, активировать NeuroCad (2) Settings UI: Save и Use once path (3) Создать корпус 50×30×10мм с двумя отверстиями через промпт (4) Сделать boolean/placement-операцию вторым запросом (5) Намеренно unsupported prompt (`создай шестерню`) → controlled failure без порчи документа (6) Сменить провайдера или модель → работает без перезапуска (7) Export STEP и STL (8) Открыть STEP в FreeCAD / KiCad и зафиксировать корректность геометрии |
+| **NC-DEVOPS-INFRA-004** | DevOps | 5 | Финальный CI-прогон Sprint 3 | stdout, PASS/FAIL | ruff/mypy/pytest чистые; benchmark не входит в pytest; release mode не содержит зависших debug artefacts в панели | `TASK CODE: NC-DEVOPS-INFRA-004` / `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -v`; `.venv/bin/ruff check .`; `.venv/bin/mypy .` / benchmark.py НЕ включать в suite / PASS если всё чисто |
+| **NC-PM-REVIEW-003** | PM | 6 | DoD-чеклист Sprint 3 | Закрытый чеклист | Все 14 approved | (1) Settings UI Save → keyring, Use once → не пишет (2) keyring optional path не крашит UI (3) Смена провайдера/модели без перезапуска работает (4) Progress/status surface управляется из одной модели состояния (5) Export STEP/STL валиден (6) `Part.OCCError` перехвачен (7) Benchmark 50 задач создаёт `benchmark_results.json` (8) Отчёт включает 3 bucket + p90 latency + rollback count (9) supported-simple ≥90% c 1-й попытки (10) unsupported safe-fail ≥95% (11) Residual hardening, если делался, подтверждён benchmark findings, а не догадками (12) exec остаётся в main thread (13) dispatcher остаётся `Signal + QueuedConnection` (14) ruff/mypy/pytest clean |
+
+**Правила останова Sprint 3:** `processEvents()` в любом path → rejected / exec вне main thread → rejected / возврат к `QTimer.singleShot` как основному dispatcher при наличии queued-signal path → rejected / benchmark в pytest → остановить / UI release mode показывает сырой `[debug] ...` trace как основной UX → rejected / выдуманные FreeCAD API добавляются в whitelist без теста и подтверждённого существования → rejected / residual hardening превращается в новый большой core scope без benchmark findings → rejected / Addon Manager/PartDesign wizard/мультимодальность → post-MVP, стоп / Ответ без TASK CODE = невалиден.
+
+---
+
+## Факт завершения Sprint 3
+
+**Источник фактов:** ручной прогон во FreeCAD, зафиксированный в `tests/manual/NeuroCad Manual Benchmark Log.md`.
+
+### Подтверждённые выводы
+
+1. `supported-simple`: подтверждено `20/20 OK`. Базовые примитивы и placement работают устойчиво.
+2. `supported-composite`: подтверждено `19/20 OK`; один кейс (`composite-20`) остался незаполненным, но общая тенденция однозначна: boolean/composite path уже рабочий и не является главным узким местом продукта.
+3. `unsupported-requests`: зафиксирован системный провал capability boundary.
+   - Модель пытается генерировать суррогатную или выдуманную геометрию вместо явного отказа.
+   - На части кейсов наблюдаются timeout вместо контролируемого safe-fail.
+   - На ряде запросов отказ не оформлен как строгая unsupported-policy.
+4. Главный риск проекта сместился:
+   - уже не `simple/composite generation`,
+   - а `safe-fail`, `unsupported request handling`, `timeout classification`, `document cleanliness after failure`.
+
+### Управленческий вывод
+
+Sprint 3 принимается как завершённый этап **с полезным benchmark evidence**, но не как этап, доказавший готовность capability boundary. Следующий спринт должен быть сфокусирован не на новом широком функционале, а на доведении неподдержанных запросов до предсказуемого и безопасного поведения.
+
+---
+
+# Sprint 4 — Capability Boundary + Safe-Fail + Benchmark Hardening
+**Нед. 8–9 · Python 3.11 · FreeCAD 1.1**
+
+**Предусловие: Sprint 3 завершён, ручной benchmark accepted as final evidence source for planning.**
+
+## Цель
+
+Сделать поведение NeuroCad предсказуемым на границе возможностей: система должна уверенно отрабатывать поддержанный scope, а неподдержанные запросы — отклонять быстро, явно и без порчи документа. Дополнительно Sprint 4 должен превратить ручной benchmark из разового артефакта в повторяемый release-grade инструмент контроля качества.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-009    / Developer / Capability registry + explicit unsupported policy    / planned
+2. NC-DEV-CORE-010    / Developer / Safe-fail execution + rollback cleanliness hardening / planned
+3. NC-DEV-UI-004      / Developer / User-facing refusal UX + timeout/error clarity       / planned
+4. NC-DEV-TEST-002    / Developer / Benchmark hardening + regression dataset             / planned
+5. NC-DEVOPS-INFRA-005 / DevOps   / Final verification for Sprint 4 safety semantics     / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-009** | Developer | 1 | Ввести явную capability boundary и unsupported-policy | prompt.py, defaults.py, agent.py, tests/test_agent.py | Поддержанный scope описан как machine-readable policy; для `gear`, `involute gear`, `GUI calls`, `imports`, `external file import`, `advanced loft/turbine` система даёт явный refusal вместо попытки строить суррогатную геометрию; unsupported path не порождает ложный retry как supported case | `TASK CODE: NC-DEV-CORE-009` / Не менять thread model. Добавить явный registry/политику поддержанных операций и категорий unsupported-запросов. Prompt и agent должны сначала классифицировать запрос относительно capability boundary, а затем либо генерировать код только в supported scope, либо возвращать controlled refusal с короткой причиной. Запретить эвристики вида "построю цилиндр как замену шестерне". |
+| **NC-DEV-CORE-010** | Developer | 1 | Усилить safe-fail и чистоту документа после ошибок | executor.py, agent.py, validator.py, tests/test_executor.py, tests/test_agent.py | После blocked token, unsupported API, timeout и runtime error документ остаётся чистым; rollback и отсутствие мусорных объектов подтверждены тестом; timeout path завершает сессию без вечного busy-state; ошибки делятся минимум на `unsupported`, `timeout`, `runtime`, `validation` | `TASK CODE: NC-DEV-CORE-010` / Укрепить post-failure semantics: формализовать критерий "document cleanliness", добавить регрессионные тесты на отсутствие новых объектов после провала, проверить abort transaction и status cleanup. Не добавлять новый concurrency path и не переносить exec из main thread. |
+| **NC-DEV-UI-004** | Developer | 2 | Ясный UX для unsupported/timeouts/errors | panel.py, widgets.py, tests/test_panel.py | Панель показывает различимые короткие статусы: `Unsupported request`, `Request timed out`, `Execution failed`; пользователь видит, почему запрос не выполнен; после fail UI полностью восстанавливается; release mode не показывает сырой debug trace | `TASK CODE: NC-DEV-UI-004` / Поверх текущего release-safe UI сделать человекочитаемую границу: unsupported request — отдельное сообщение, transport timeout — отдельное, runtime error — отдельное. Не возвращать raw debug bubbles. Не добавлять streaming-first UX. |
+| **NC-DEV-TEST-002** | Developer | 3 | Довести benchmark до повторяемого release-grade контура | tests/benchmark.py, benchmark_results.json, tests/manual/NeuroCad Manual Benchmark Log.md, короткий benchmark report | Ручной benchmark log превращён в baseline dataset; `unsupported-requests` оценивается именно как safe-fail; автоматический benchmark path либо реализован для реального FreeCAD, либо документирован как manual-only gate с валидным шаблоном и правилом подсчёта; результаты сравнимы между прогонами | `TASK CODE: NC-DEV-TEST-002` / Использовать текущий ручной benchmark как baseline. Починить договорённость по bucket names, success semantics и report format. Приоритет Sprint 4 — повторяемость и корректная интерпретация safe-fail, а не искусственное накручивание success-rate. |
+| **NC-DEVOPS-INFRA-005** | DevOps | 4 | Финальная верификация Sprint 4 | stdout, PASS/FAIL, safety note | `.venv/bin/ruff check .`, `.venv/bin/mypy .`, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -v` чистые; regression на unsupported/safe-fail зелёный; новый benchmark report приложен и интерпретируется однозначно | `TASK CODE: NC-DEVOPS-INFRA-005` / Прогнать стандартные gate'ы и отдельно подтвердить вручную минимум 3 класса сценариев: supported-simple остаётся зелёным; supported-composite не деградирует; unsupported requests отклоняются без мусорной геометрии и зависаний. |
+| **NC-PM-REVIEW-004** | PM | 5 | DoD-чеклист Sprint 4 | Закрытый чеклист | Все 12 approved | (1) Capability boundary описана явно (2) unsupported requests не превращаются в суррогатную геометрию (3) gear/involute gear/GUI/import/external import/turbine class относятся к unsupported path (4) unsupported request даёт явный user-facing refusal (5) timeout path снимает busy-state (6) document cleanliness после fail подтверждена тестом (7) rollback semantics не регрессировали (8) simple benchmark baseline не деградировал (9) composite benchmark baseline не деградировал (10) benchmark report интерпретирует unsupported bucket как safe-fail (11) exec остаётся в main thread (12) ruff/mypy/pytest clean |
+
+**Правила останова Sprint 4:** любое расширение capability scope без benchmark и теста → rejected / попытка "молчаливо подменять" unsupported объект похожей простой геометрией → rejected / processEvents() или новый background exec path → rejected / benchmark success-rate за счёт переопределения unsupported как supported → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+## Сводная таблица: что изменилось от v0.1 → v0.6
+
+| Компонент | v0.1 (оригинал) | v0.6 (финал) |
 |---|---|---|
 | Workbench entry | `workbench.py` отдельный файл | Всё в `InitGui.py` (ghbalf паттерн) |
 | Dock creation | `addDockWidget` в `Initialize()` | `get_panel_dock()` singleton в `panel.py` |
 | PySide import | `from PySide6 import ...` хардкод | `from .compat import ...` shim |
-| Threading | `processEvents()` в streaming / `QThread` | `LLMWorker(threading.Thread)` + `QTimer.singleShot` |
+| Threading | `processEvents()` в streaming / `QThread` | `LLMWorker(threading.Thread)` + dispatcher через `QObject`/`Signal`/`QueuedConnection` |
 | Active document | `FreeCAD.ActiveDocument` | `get_active_document()` GUI-aligned |
 | Config path | `~/.freecad/neurocad/` хардкод | `_get_config_dir()` с 3-уровневым fallback |
 | Code extraction | `extract_code()` неявная в agent | `core/code_extractor.py` отдельный модуль с тестами |
@@ -122,3 +248,4 @@ Streaming UI (ProgressBar, chunk display) — в Sprint 3. Здесь тольк
 | Transaction name | `"CADCopilot"` (расхождение) | `"NeuroCad"` везде |
 | Input guard | нет | `_set_busy(True/False)` в panel |
 | Exporter | `exportStep(str(path))` без guard | + `Part.OCCError` catch + null shape filter |
+| Benchmark evidence | не определено | ручной FreeCAD benchmark принят как baseline; Sprint 4 переводит его в release-grade safety gate |

@@ -1,5 +1,7 @@
 """Anthropic Claude adapter."""
 
+from collections.abc import Iterator
+
 from .base import LLMAdapter, LLMResponse
 
 
@@ -14,9 +16,52 @@ class AnthropicAdapter(LLMAdapter):
         self.temperature = temperature
 
     def complete(self, messages, system="", tools=None) -> LLMResponse:
-        # Implementation will be added in Sprint 2
-        raise NotImplementedError("AnthropicAdapter.complete not implemented")
+        """Send a request and get a single response."""
+        try:
+            import anthropic  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "Anthropic SDK not installed. Run `pip install anthropic`."
+            ) from e
 
-    def stream(self, messages, system=""):
-        # Implementation will be added in Sprint 2
-        raise NotImplementedError("AnthropicAdapter.stream not implemented")
+        client = anthropic.Anthropic(api_key=self.api_key)
+        extra_kwargs = {}
+        if tools is not None:
+            extra_kwargs["tools"] = tools
+        # Anthropic expects system as separate parameter
+        response = client.messages.create(
+            model=self.model,
+            system=system,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            **extra_kwargs,
+        )
+        return LLMResponse(
+            content=response.content[0].text,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            stop_reason=response.stop_reason,
+        )
+
+    def stream(self, messages, system="") -> Iterator[str]:
+        """Stream tokens from the LLM."""
+        try:
+            import anthropic  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "Anthropic SDK not installed. Run `pip install anthropic`."
+            ) from e
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        stream = client.messages.create(
+            model=self.model,
+            system=system,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            if chunk.type == "content_block_delta":
+                yield chunk.delta.text

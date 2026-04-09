@@ -1,29 +1,35 @@
-"""Extract Python code from LLM responses (e.g., fenced blocks)."""
+"""Extract and normalize Python code from LLM responses."""
+
+from __future__ import annotations
 
 import re
 
+_FENCED_PYTHON_RE = re.compile(r"```python\s*(.*?)(?<=\n)```", re.IGNORECASE | re.DOTALL)
+_FENCED_ANY_RE = re.compile(r"```\s*(.*?)(?<=\n)```", re.DOTALL)
+_SAFE_IMPORT_RE = re.compile(
+    r"^\s*(?:from\s+(FreeCAD|Part|PartDesign|Sketcher|Draft|Mesh)\s+import\s+.+|"
+    r"import\s+(FreeCAD|Part|PartDesign|Sketcher|Draft|Mesh)(?:\s+as\s+\w+)?)\s*$"
+)
+
+
+def _strip_safe_imports(code: str) -> str:
+    """Remove redundant imports for names already present in the sandbox."""
+    lines = []
+    for line in code.splitlines():
+        if _SAFE_IMPORT_RE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
 
 def extract_code(raw: str) -> str:
-    """Strip Markdown fenced code blocks and return clean Python code.
-
-    Args:
-        raw: Raw LLM response, possibly containing ```python ... ``` blocks.
-
-    Returns:
-        Extracted Python code (without fences). If no fences, returns raw text stripped.
-    """
+    """Return a single normalized Python block from an LLM response."""
     if not raw:
         return ""
 
-    # Pattern matches ```python ... ``` or ``` ... ``` (optional language)
-    # DOTALL to match across newlines, MULTILINE to treat ^/$ per line.
-    # The closing fence must be at start of line (with optional whitespace).
-    pattern = r"^```(?:python)?\s*$\n?(.*?)^```\s*$"
-    matches = re.findall(pattern, raw, flags=re.DOTALL | re.MULTILINE)
-    if matches:
-        # Concatenate all matches (multiple blocks)
-        extracted = "\n".join(match.strip() for match in matches)
-        return extracted.strip()
+    match = _FENCED_PYTHON_RE.search(raw)
+    if match is None:
+        match = _FENCED_ANY_RE.search(raw)
 
-    # No fenced block found, return raw text stripped
-    return raw.strip()
+    code = match.group(1).strip() if match else raw.strip()
+    return _strip_safe_imports(code)

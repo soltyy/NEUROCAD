@@ -26,7 +26,9 @@ def test_capture_with_objects():
     mock_box.Shape.ShapeType = "Solid"
     mock_box.Shape.Volume = 1000.0
     mock_box.Placement = MagicMock()
-    mock_box.Placement.toTuple.return_value = (0, 0, 0, 0, 0, 0, 1)
+    mock_box.Placement.Base = MagicMock(x=0.0, y=0.0, z=0.0)
+    mock_box.Placement.Rotation = MagicMock()
+    mock_box.Placement.Rotation.toEuler.return_value = (0.0, 0.0, 0.0)
     mock_box.Visibility = True
 
     mock_doc = MagicMock()
@@ -43,6 +45,7 @@ def test_capture_with_objects():
     assert obj.type_id == "Part::Box"
     assert obj.shape_type == "Solid"
     assert obj.volume_mm3 == 1000.0
+    assert obj.placement == "pos=(0.0,0.0,0.0) rot=(0.0,0.0,0.0)"
     assert obj.visible is True
 
 
@@ -76,6 +79,23 @@ def test_to_prompt_str_limit():
     result = to_prompt_str(snap, max_chars=10)
     assert isinstance(result, str)
     # Should not raise
+
+
+def test_to_prompt_str_omits_whole_lines_when_truncated():
+    """Truncation should happen on line boundaries with an omission marker."""
+    snap = DocSnapshot(
+        filename="Doc",
+        active_object="Obj0",
+        objects=[
+            ObjectInfo(name=f"Obj{i}", type_id="Part::Feature", placement="pos=(0.0,0.0,0.0)")
+            for i in range(10)
+        ],
+    )
+
+    result = to_prompt_str(snap, max_chars=160)
+
+    assert "more line(s) omitted" in result
+    assert not result.endswith("placement=po...")
 
 
 def test_to_prompt_str_includes_filename():

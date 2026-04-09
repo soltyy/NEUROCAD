@@ -71,10 +71,23 @@ class SettingsCommand:
     def Activated(self):
         import FreeCADGui
 
+        from neurocad.ui.panel import get_panel_dock
         from neurocad.ui.settings import SettingsDialog
         parent = FreeCADGui.getMainWindow()
         dlg = SettingsDialog(parent)
-        dlg.exec()
+        result = dlg.exec()
+        # If dialog was accepted, update panel's adapter if needed
+        if result == SettingsDialog.Accepted:
+            adapter = dlg.get_adapter()
+            panel = get_panel_dock(create=False)
+            if adapter is not None:
+                # Use once session adapter
+                if panel is not None:
+                    panel.set_adapter(adapter)
+            else:
+                # Saved to keyring; panel should reload config
+                if panel is not None:
+                    panel._init_adapter()
 
     def IsActive(self):
         return True

@@ -91,3 +91,14 @@ def test_save_api_key_calls_keyring():
     with patch("neurocad.config.config.keyring", mock_keyring):
         save_api_key("openai", "sk-test")
     mock_keyring.set_password.assert_called_once_with("neurocad", "openai", "sk-test")
+
+
+def test_save_api_key_without_keyring_raises_runtime_error():
+    """save_api_key should fail clearly when keyring is unavailable."""
+    with patch("neurocad.config.config.keyring", None):
+        try:
+            save_api_key("openai", "sk-test")
+        except RuntimeError as exc:
+            assert "keyring is not installed" in str(exc)
+        else:
+            raise AssertionError("save_api_key() should raise when keyring is unavailable")

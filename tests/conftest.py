@@ -22,10 +22,15 @@ def mock_freecad():
 
     sys.modules["FreeCAD"] = mock_fc
     sys.modules["FreeCADGui"] = mock_fcgui
+    # Mock other FreeCAD submodules
+    for mod_name in ("Part", "PartDesign", "Sketcher", "Draft", "Mesh"):
+        sys.modules[mod_name] = MagicMock()
     yield
     # Cleanup
     sys.modules.pop("FreeCAD", None)
     sys.modules.pop("FreeCADGui", None)
+    for mod_name in ("Part", "PartDesign", "Sketcher", "Draft", "Mesh"):
+        sys.modules.pop(mod_name, None)
 
 
 @pytest.fixture(scope="session")

@@ -1,0 +1,446 @@
+{
+  "supported-simple": {
+    "total_tasks": 20,
+    "success_count": 20,
+    "success_rate": 1.0,
+    "attempts_avg": 1,
+    "attempts_p90": 1.0,
+    "latency_p90_ms": 433.060461942672,
+    "rollback_count": 0,
+    "tasks": [
+      {
+        "id": "simple-01",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 198.50623679150806,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-02",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 83.92285199511691,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-03",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 189.25305646753375,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-04",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 51.71334480059341,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-05",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 221.74689151252758,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-06",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 418.39779956055406,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-07",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 363.0859962523348,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-08",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 121.71273305607522,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-09",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 266.6516546810843,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-10",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 273.65683898314995,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-11",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 250.10191281581888,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-12",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 434.68964665179624,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-13",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 238.7053823186134,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-14",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 216.53198711884437,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-15",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 163.99583149429344,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-16",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 145.3473810241865,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-17",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 305.23412596245794,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-18",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 383.45931436387883,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-19",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 459.13742094105584,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "simple-20",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 217.47490579962874,
+        "rollback_count": 0,
+        "error": null
+      }
+    ]
+  },
+  "supported-composite": {
+    "total_tasks": 20,
+    "success_count": 14,
+    "success_rate": 0.7,
+    "attempts_avg": 1.9,
+    "attempts_p90": 3.0,
+    "latency_p90_ms": 431.35583152906503,
+    "rollback_count": 3,
+    "tasks": [
+      {
+        "id": "composite-01",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 431.97094056379854,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-02",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 306.9780765182887,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-03",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 384.50823945391323,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-04",
+        "ok": false,
+        "attempts": 2,
+        "latency_ms": 70.11310540128896,
+        "rollback_count": 0,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-05",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 77.35400831085765,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-06",
+        "ok": false,
+        "attempts": 2,
+        "latency_ms": 368.0237976092828,
+        "rollback_count": 1,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-07",
+        "ok": false,
+        "attempts": 2,
+        "latency_ms": 402.6465087248626,
+        "rollback_count": 1,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-08",
+        "ok": true,
+        "attempts": 3,
+        "latency_ms": 171.2582737145266,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-09",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 141.55418116240463,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-10",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 222.04715728901263,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-11",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 425.81985021646364,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-12",
+        "ok": true,
+        "attempts": 3,
+        "latency_ms": 244.09903789819518,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-13",
+        "ok": false,
+        "attempts": 3,
+        "latency_ms": 421.49407156748657,
+        "rollback_count": 1,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-14",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 446.3106590037287,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-15",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 342.9705557630495,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-16",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 143.36584054798442,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-17",
+        "ok": false,
+        "attempts": 2,
+        "latency_ms": 419.3439992059925,
+        "rollback_count": 0,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-18",
+        "ok": false,
+        "attempts": 1,
+        "latency_ms": 67.80754283629231,
+        "rollback_count": 0,
+        "error": "Mock error"
+      },
+      {
+        "id": "composite-19",
+        "ok": true,
+        "attempts": 3,
+        "latency_ms": 330.42325639079434,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "composite-20",
+        "ok": true,
+        "attempts": 3,
+        "latency_ms": 195.61403001739498,
+        "rollback_count": 0,
+        "error": null
+      }
+    ]
+  },
+  "unsupported": {
+    "total_tasks": 10,
+    "success_count": 10,
+    "success_rate": 1.0,
+    "attempts_avg": 1.5,
+    "attempts_p90": 2.0,
+    "latency_p90_ms": 469.6261843294561,
+    "rollback_count": 0,
+    "tasks": [
+      {
+        "id": "unsupported-01",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 103.29123237404146,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-02",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 243.95950237332906,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-03",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 334.8343381680215,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-04",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 252.24473015874702,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-05",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 477.7850671777495,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-06",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 396.19623869481495,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-07",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 319.078211379907,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-08",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 98.20808218529224,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-09",
+        "ok": true,
+        "attempts": 2,
+        "latency_ms": 149.90186551086757,
+        "rollback_count": 0,
+        "error": null
+      },
+      {
+        "id": "unsupported-10",
+        "ok": true,
+        "attempts": 1,
+        "latency_ms": 73.33418444172189,
+        "rollback_count": 0,
+        "error": null
+      }
+    ]
+  },
+  "summary": {
+    "timestamp": 1775731704.77566,
+    "freecad_available": false,
+    "total_tasks": 50,
+    "overall_success_rate": 0.88,
+    "targets": {
+      "supported_simple": 0.9,
+      "supported_composite": 0.7,
+      "unsupported_safe_fail": 0.95
+    }
+  }
+}

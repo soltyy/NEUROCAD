@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import keyring
+try:
+    import keyring
+except ImportError:
+    keyring = None  # type: ignore[assignment]
 
 
 def _get_config_dir() -> Path:
@@ -63,4 +66,9 @@ def save(config: dict[str, Any]):
 
 def save_api_key(provider: str, key: str):
     """Store API key in system keyring (outside config file)."""
+    if keyring is None:
+        raise RuntimeError(
+            "keyring is not installed in the active FreeCAD Python environment. "
+            "Install the project dependencies or use an environment variable/session key."
+        )
     keyring.set_password("neurocad", provider, key)

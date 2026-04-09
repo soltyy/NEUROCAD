@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 neurocad/InitGui.py
 neurocad/__init__.py
@@ -12,6 +13,7 @@ neurocad/core/active_document.py
 neurocad/core/agent.py
 neurocad/core/code_extractor.py
 neurocad/core/context.py
+neurocad/core/debug.py
 neurocad/core/executor.py
 neurocad/core/exporter.py
 neurocad/core/history.py
@@ -27,8 +29,14 @@ neurocad/ui/panel.py
 neurocad/ui/settings.py
 neurocad/ui/widgets.py
 tests/test_active_document.py
+tests/test_adapters.py
+tests/test_agent.py
 tests/test_code_extractor.py
 tests/test_compat.py
 tests/test_config.py
 tests/test_context.py
+tests/test_executor.py
 tests/test_history.py
+tests/test_panel.py
+tests/test_validator.py
+tests/test_worker.py
