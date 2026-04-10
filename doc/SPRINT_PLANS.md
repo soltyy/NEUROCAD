@@ -243,7 +243,7 @@ Sprint 3 принимается как завершённый этап **с по
 
 # Sprint 4.1 — Release Recovery + Workbench Availability
 **Нед. 10 · Python 3.11 · FreeCAD 1.1**
-**Статус:** planned
+**Статус:** completed
 
 **Предусловие:** Sprint 4 считается последним подтверждённым baseline. Утраченные Sprint 5/6 не считаются текущим состоянием проекта, но их полезный scope поднимается сюда как recovery-план.
 
@@ -258,10 +258,10 @@ Sprint 3 принимается как завершённый этап **с по
 **Rolling Plan (старт)**
 ```
 1. NC-DEV-TEST-003A     / Developer / Manual smoke baseline recovery                    / completed
-2. NC-DEV-CORE-012A     / Developer / Corrective scope: refusal + export contract       / planned
-3. NC-DEV-UI-005A       / Developer / Workbench icon + deterministic panel behavior     / planned
-4. NC-DEVOPS-INFRA-006A / DevOps    / Mod bootstrap, symlink and InitGui load sanity    / planned
-5. NC-PM-REVIEW-004A    / PM        / Release recovery review after Sprint 4 baseline   / planned
+2. NC-DEV-CORE-012A     / Developer / Corrective scope: refusal + export contract       / completed
+3. NC-DEV-UI-005A       / Developer / Workbench icon + deterministic panel behavior     / completed
+4. NC-DEVOPS-INFRA-006A / DevOps    / Mod bootstrap, symlink and InitGui load sanity    / completed
+5. NC-PM-REVIEW-004A    / PM        / Release recovery review after Sprint 4 baseline   / completed
 ```
 
 ---
@@ -278,7 +278,27 @@ Sprint 3 принимается как завершённый этап **с по
 
 **Факт статуса на 2026-04-10:**
 - `NC-DEV-TEST-003A` — completed; артефакт: `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
-- Остальные задачи Sprint 4.1 остаются в статусе `planned`.
+- `NC-DEV-CORE-012A` — completed; evidence: corrective changes in `neurocad/core/agent.py`, `neurocad/config/defaults.py`, `neurocad/core/exporter.py`, regression coverage in `tests/test_agent.py` and `tests/test_exporter.py`.
+- `NC-DEV-UI-005A` — completed; evidence: workbench/icon/bootstrap behavior covered by current code plus manual reconciliation in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- `NC-DEVOPS-INFRA-006A` — completed; evidence: install/bootstrap checklist in `DEV_SETUP.md` plus manual reconciliation in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- `NC-PM-REVIEW-004A` — completed; все 8 пунктов recovery-checklist подтверждены manual evidence и automated gate.
+
+**Факт закрытия NC-PM-REVIEW-004A:**
+- (1) `NeuroCad` виден в dropdown — approved; manual evidence in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- (2) Активация workbench показывает panel — approved; manual evidence in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- (3) icon/resource fix не ломает bootstrap — approved; current `InitGui.py` / `neurocad/InitGui.py` entry points plus manual reconciliation note.
+- (4) file/import refusal не создаёт surrogate geometry — approved; refusal logic in `neurocad/core/agent.py` and regression coverage in `tests/test_agent.py`.
+- (5) export success подтверждается файлом — approved; contract in `neurocad/core/exporter.py`, regression coverage in `tests/test_exporter.py`, and effect-confirmed manual evidence in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- (6) autoscroll deterministic — approved; current panel behavior plus manual evidence in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- (7) automated gate clean — approved; `.venv/bin/ruff check .` clean, `.venv/bin/mypy .` clean, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -q` → `123 passed, 1 skipped, 1 xfailed`.
+- (8) manual smoke для текущего дерева приложен — approved; current manual source of truth in `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+
+**Факт закрытия Sprint 4.1:**
+- `NC-DEV-TEST-003A` — completed
+- `NC-DEV-CORE-012A` — completed
+- `NC-DEV-UI-005A` — completed
+- `NC-DEVOPS-INFRA-006A` — completed
+- `NC-PM-REVIEW-004A` — completed
 
 ## Что в задачах может приводить к результату на скриншоте
 

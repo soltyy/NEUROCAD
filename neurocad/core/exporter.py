@@ -73,6 +73,11 @@ def export_objects(
     except Exception as e:
         raise ExportError(f"Unexpected error during export: {e}") from e
 
+    # Verify export succeeded: file must exist and be non-empty
+    if not file_path.exists():
+        raise ExportError(f"Export failed: file '{file_path}' was not created.")
+    if file_path.stat().st_size == 0:
+        raise ExportError(f"Export failed: file '{file_path}' is empty.")
 
 def export_selected(
     doc: "FreeCAD.Document",

@@ -1,8 +1,11 @@
 """Agent orchestrates LLM, execution, validation, and rollback."""
 
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from neurocad.config.defaults import REFUSAL_KEYWORDS
 
 from .code_extractor import extract_code
 from .debug import log_error, log_info, log_warn
@@ -70,6 +73,12 @@ def _make_feedback(error: str, category: str) -> str:
         return f"LLM error: {error}"
     # default
     return f"Execution failed: {error}"
+
+
+def _contains_refusal_intent(text: str) -> bool:
+    """Return True if the user prompt contains unsupported file/import/resource keywords."""
+    lower = text.lower()
+    return any(re.search(rf'\b{re.escape(kw)}\b', lower) for kw in REFUSAL_KEYWORDS)
 
 
 def _complete_with_timeout(adapter, messages, system: str, timeout_s: float = 12.0):
@@ -171,6 +180,20 @@ def run(
     history.add(Role.USER, text)
     log_info("agent.run", "history updated with user prompt", text=text)
     callbacks.on_status("history updated")
+
+    # Early refusal for file/import/external-resource intents
+    if _contains_refusal_intent(text):
+        log_info("agent.run", "early refusal for file/import/external-resource intent", text=text)
+        callbacks.on_status("unsupported file/import/external-resource operation")
+        return AgentResult(
+            ok=False,
+            attempts=0,
+            error=(
+                "Unsupported operation: file/import/external-resource operations are not supported."
+            ),
+            new_objects=[],
+            rollback_count=0,
+        )
 
     # Build system prompt from document snapshot
     from .context import capture

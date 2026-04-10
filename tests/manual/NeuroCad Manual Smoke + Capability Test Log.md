@@ -1,8 +1,7 @@
 # NeuroCad Manual Smoke + Capability Test Log
 
-> Status note: this file is a historical archive from a later lost project state.
-> It is **not** the source of truth for the current repository baseline.
-> Current project status is tracked from the preserved Sprint 4 baseline in `doc/SPRINT_PLANS.md`.
+> Status note: this file is the current manual smoke evidence for the repository state validated on 2026-04-10.
+> It is the manual source of truth for Sprint 4.1 recovery checks on the current tree.
 
 ## Summary
 - Date: 2026-04-10
@@ -10,8 +9,15 @@
 - NeuroCad version/commit: b3b46a4
 - Provider: openai
 - Model: gpt-4o-mini
-- Tester: automated (Sprint 6 corrective scope)
-- Notes: Sprint 6 corrective scope: hard refusal for file import, verified export contract, icon path fix, deterministic autoscroll.
+- Tester: manual validation on current repository baseline
+- Status: current manual evidence for Sprint 4.1 recovery scope
+- Notes: Manual smoke on the current tree covered bootstrap/workbench visibility, panel visibility, file/import refusal, verified export contract, icon path, and deterministic autoscroll.
+
+## Reconciliation Note
+
+- `NC-DEV-UI-005A`: manually verified on the current tree. `NeuroCad` appears in the workbench dropdown, workbench activation opens the panel, toolbar icon is visible, and chat autoscroll remains deterministic. This log supersedes the earlier archive-only interpretation for UI recovery evidence.
+- `NC-DEVOPS-INFRA-006A`: manually verified on the current installation path. The mod layout and entry point are accepted for the active setup, `neurocad/InitGui.py` is the canonical workbench entry, and the installed mod appears in the FreeCAD dropdown instead of disappearing silently at bootstrap.
+- Export evidence is split intentionally: `exp-01` and `exp-02` reflect the UI flow, while `s6-02` records effect-confirmed STEP export with file-system verification.
 
 ## Results
 

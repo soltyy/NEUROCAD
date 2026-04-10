@@ -59,9 +59,18 @@ def test_export_objects_step():
     with patch.dict(sys.modules, {"Part": mock_part, "FreeCAD": MagicMock()}):
         importlib.reload(exporter_module)
         file_path = Path("/tmp/test.step")
-        exporter_module.export_objects([mock_obj], file_path, "step")
-        # Should call exportStep with string path and shape
-        mock_part.exportStep.assert_called_once_with("/tmp/test.step", mock_shape)
+        mock_stat = MagicMock()
+        mock_stat.st_size = 1024
+        mock_stat.st_mode = 16877  # directory mode
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.stat", return_value=mock_stat),
+        ):
+            exporter_module.export_objects([mock_obj], file_path, "step")
+            # Should call exportStep with string path and shape
+            mock_part.exportStep.assert_called_once_with("/tmp/test.step", mock_shape)
 
 
 def test_export_objects_stl():
@@ -79,8 +88,17 @@ def test_export_objects_stl():
     with patch.dict(sys.modules, {"Part": mock_part, "FreeCAD": MagicMock()}):
         importlib.reload(exporter_module)
         file_path = Path("/tmp/test.stl")
-        exporter_module.export_objects([mock_obj], file_path, "stl")
-        mock_part.exportStl.assert_called_once_with("/tmp/test.stl", mock_shape)
+        mock_stat = MagicMock()
+        mock_stat.st_size = 1024
+        mock_stat.st_mode = 16877  # directory mode
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.stat", return_value=mock_stat),
+        ):
+            exporter_module.export_objects([mock_obj], file_path, "stl")
+            mock_part.exportStl.assert_called_once_with("/tmp/test.stl", mock_shape)
 
 
 def test_export_objects_multiple_shapes_creates_compound():
@@ -103,13 +121,22 @@ def test_export_objects_multiple_shapes_creates_compound():
     with patch.dict(sys.modules, {"Part": mock_part, "FreeCAD": MagicMock()}):
         importlib.reload(exporter_module)
         file_path = Path("/tmp/test.step")
-        exporter_module.export_objects([mock_obj1, mock_obj2], file_path, "step")
-        # Compound should be called with a list of shapes
-        mock_part.Compound.assert_called_once_with([mock_shape1, mock_shape2])
-        # exportStep called with the compound shape
-        mock_part.exportStep.assert_called_once_with(
-            "/tmp/test.step", mock_part.Compound.return_value
-        )
+        mock_stat = MagicMock()
+        mock_stat.st_size = 1024
+        mock_stat.st_mode = 16877  # directory mode
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.stat", return_value=mock_stat),
+        ):
+            exporter_module.export_objects([mock_obj1, mock_obj2], file_path, "step")
+            # Compound should be called with a list of shapes
+            mock_part.Compound.assert_called_once_with([mock_shape1, mock_shape2])
+            # exportStep called with the compound shape
+            mock_part.exportStep.assert_called_once_with(
+                "/tmp/test.step", mock_part.Compound.return_value
+            )
 
 
 def test_export_objects_no_shapes_raises():
@@ -164,7 +191,19 @@ def test_export_objects_occ_error_wrapped():
 
     with patch.dict(sys.modules, {"Part": mock_part, "FreeCAD": MagicMock()}):
         importlib.reload(exporter_module)
-        with pytest.raises(exporter_module.ExportError, match="Geometry export failed"):
+        mock_stat = MagicMock()
+        mock_stat.st_size = 1024
+        mock_stat.st_mode = 16877  # directory mode
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.stat", return_value=mock_stat),
+            pytest.raises(
+                exporter_module.ExportError,
+                match="Geometry export failed",
+            ),
+        ):
             exporter_module.export_objects([mock_obj], Path("/tmp/test.step"), "step")
 
 
@@ -225,6 +264,52 @@ def test_export_last_successful():
             mock_export.assert_called_once_with(
                 mock_doc, file_path, "step", selected_names=["Box", "Cylinder"]
             )
+
+
+def test_export_objects_verifies_file_exists_and_non_empty():
+    """export_objects raises ExportError when file missing or empty, passes when valid."""
+    mock_shape = MagicMock()
+    mock_shape.isNull.return_value = False
+    mock_shape.isValid.return_value = True
+    mock_obj = MagicMock()
+    mock_obj.Shape = mock_shape
+
+    mock_part = MagicMock()
+    mock_part.Compound = MagicMock(return_value=mock_shape)
+    mock_part.exportStep = MagicMock()
+    mock_part.exportStl = MagicMock()
+
+    with patch.dict(sys.modules, {"Part": mock_part, "FreeCAD": MagicMock()}):
+        importlib.reload(exporter_module)
+
+        file_path = Path("/tmp/test.step")
+        # Mock directory creation
+        with patch("pathlib.Path.parent") as mock_parent:
+            mock_mkdir = MagicMock()
+            mock_parent.mkdir = mock_mkdir
+            # Test success case: file exists and non-empty
+            with patch("pathlib.Path.exists", return_value=True):
+                mock_stat = MagicMock()
+                mock_stat.st_size = 1024
+                with patch("pathlib.Path.stat", return_value=mock_stat):
+                    exporter_module.export_objects([mock_obj], file_path, "step")
+                    mock_part.exportStep.assert_called_once_with("/tmp/test.step", mock_shape)
+                    mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
+            # Test file missing
+            with patch("pathlib.Path.exists", return_value=False):
+                with pytest.raises(exporter_module.ExportError) as exc_info:
+                    exporter_module.export_objects([mock_obj], file_path, "step")
+                assert "was not created" in str(exc_info.value)
+                # Ensure export was called (but verification fails)
+                mock_part.exportStep.assert_called()
+            # Test file empty
+            with patch("pathlib.Path.exists", return_value=True):
+                mock_stat_empty = MagicMock()
+                mock_stat_empty.st_size = 0
+                with patch("pathlib.Path.stat", return_value=mock_stat_empty):
+                    with pytest.raises(exporter_module.ExportError) as exc_info:
+                        exporter_module.export_objects([mock_obj], file_path, "step")
+                    assert "is empty" in str(exc_info.value)
 
 
 if __name__ == "__main__":

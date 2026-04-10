@@ -300,5 +300,24 @@ def test_last_new_objects_updated_on_worker_done(qapp):
     assert dock._last_new_objects == []
 
 
+def test_initgui_import_succeeds():
+    """Import neurocad.InitGui with mocked FreeCADGui should not raise."""
+    import importlib
+    import sys
+
+    mock_fcgui = sys.modules["FreeCADGui"]
+    with patch.object(mock_fcgui, "addCommand") as mock_add_cmd, \
+         patch.object(mock_fcgui, "addWorkbench") as mock_add_wb:
+        # Reset call counts from previous tests
+        mock_add_cmd.reset_mock()
+        mock_add_wb.reset_mock()
+        # Reload the module to run its top-level code with our mocks
+        import neurocad.InitGui
+        importlib.reload(neurocad.InitGui)
+        # Ensure registration calls were made (allow extra calls from previous tests)
+        assert mock_add_cmd.call_count >= 2
+        assert mock_add_wb.call_count >= 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -21,3 +21,11 @@ SANDBOX_WHITELIST = [
     "Draft",
     "Mesh",
 ]
+
+REFUSAL_KEYWORDS = [
+    "file",
+    "import",
+    "url",
+    "http",
+    "https",
+]

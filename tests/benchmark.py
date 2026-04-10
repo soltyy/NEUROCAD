@@ -19,15 +19,15 @@ and writes results to `benchmark_results.json` in the current directory.
 """
 
 import json
+import platform
 import statistics
 import sys
-import platform
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
 from neurocad.llm.base import LLMAdapter, LLMResponse
-from neurocad.core.history import History
 
 # Optional imports – if FreeCAD is not available, the benchmark will exit
 try:
@@ -136,27 +136,28 @@ def run_task_real(task: BenchmarkTask) -> BenchmarkResult:
     """Real execution using NeuroCad agent and FreeCAD."""
     # 1. Ensure a clean document
     import FreeCAD
-    from neurocad.core.history import History
+
     from neurocad.core.agent import run as agent_run
-    
+    from neurocad.core.history import History
+
     doc = FreeCAD.newDocument(f"Benchmark_{task.id}")
     doc.recompute()
-    
+
     # 2. Instantiate a mock LLM adapter (deterministic for benchmarking)
     adapter = MockAdapter(api_key="mock")
     history = History()
-    
+
     # 3. Run the agent with the prompt
     start = time.perf_counter()
     result = agent_run(
-        prompt=task.prompt,
+        text=task.prompt,
         doc=doc,
         adapter=adapter,
         history=history,
-        callbacks=None
+        callbacks=None,
     )
     latency_ms = (time.perf_counter() - start) * 1000
-    
+
     # 4. Determine if outcome matches expectation
     ok = False
     if task.expected_outcome == "success":
@@ -167,10 +168,10 @@ def run_task_real(task: BenchmarkTask) -> BenchmarkResult:
             token in (result.error or "").lower()
             for token in ("unsupported_api", "blocked_token")
         )
-    
+
     # 5. Clean up
     FreeCAD.closeDocument(doc.Name)
-    
+
     return BenchmarkResult(
         task_id=task.id,
         category=task.category,
@@ -178,7 +179,7 @@ def run_task_real(task: BenchmarkTask) -> BenchmarkResult:
         attempts=result.attempts,
         latency_ms=latency_ms,
         rollback_count=result.rollback_count,
-        error=result.error if not ok else None
+        error=result.error if not ok else None,
     )
 
 

@@ -1,4 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect x="4" y="4" width="56" height="56" rx="8" fill="#4f46e5" stroke="#3730a3" stroke-width="2"/>
-  <text x="32" y="38" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" fill="white" font-weight="bold">NC</text>
+  <!-- Top face -->
+  <polygon points="32,6 56,20 32,34 8,20"
+           fill="#60a5fa" stroke="#1d4ed8" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Left face -->
+  <polygon points="8,20 32,34 32,58 8,44"
+           fill="#2563eb" stroke="#1d4ed8" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Right face -->
+  <polygon points="56,20 32,34 32,58 56,44"
+           fill="#1e40af" stroke="#1d4ed8" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Neural nodes -->
+  <circle cx="32" cy="14" r="3" fill="white"/>
+  <circle cx="44" cy="21" r="2.5" fill="white"/>
+  <circle cx="20" cy="21" r="2.5" fill="white"/>
+  <!-- Neural connections -->
+  <line x1="32" y1="14" x2="44" y2="21" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="32" y1="14" x2="20" y2="21" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="44" y1="21" x2="20" y2="21" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.8"/>
 </svg>

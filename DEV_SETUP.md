@@ -81,6 +81,12 @@ Then link `$(pwd)/neurocad` into `<UserAppData>/Mod/neurocad`.
 On Linux, the user dir may also be versioned; use the same `UserAppData` rule instead of
 guessing the path.
 
+## 5.1 Workbench bootstrap verification
+
+- The workbench entry point is `neurocad/InitGui.py`. A root-level `InitGui.py` is also provided as a safety net but is not required if the mod symlink points to the `neurocad` subdirectory. The root-level file is a simple redirect that will raise any import errors immediately, preventing silent workbench disappearance.
+- Icons are located in `neurocad/resources/icons/`. The workbench icon path is `resources/icons/neurocad.svg`. If the icon fails to load, FreeCAD will show a placeholder icon; the workbench will still appear.
+- To verify that the workbench loads correctly, open FreeCAD and check that **NeuroCad** appears in the workbench dropdown. If it's missing, verify the symlink target and ensure `neurocad/InitGui.py` is present.
+
 ## 6. Running tests
 
 Activate the virtual environment first, then run:

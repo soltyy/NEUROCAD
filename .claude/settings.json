@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Read(//Users/soltyy/Library/Logs/FreeCAD/**)",
-      "Read(//Users/soltyy/Library/Logs/**)"
+      "Read(//Users/soltyy/Library/Logs/**)",
+      "Read(//Users/soltyy/Library/Application Support/FreeCAD/Mod/neurocad/**)",
+      "Read(//Users/soltyy/NEUROCAD/neurocad/**)",
+      "Read(//Users/soltyy/Library/Application Support/FreeCAD/**)",
+      "Read(//Applications/**)",
+      "Bash(log show:*)",
+      "Read(//Users/soltyy/Library/Preferences/**)",
+      "Bash(git checkout:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/soltyy/Library/Preferences/FreeCAD/v1-1"
     ]
   }
 }

@@ -248,7 +248,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
             self._current_assistant_bubble = bubble
         else:
             self._current_assistant_bubble.append_text(chunk)
-        self._scroll_to_bottom()
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _on_attempt(self, n: int, mx: int):
         """Update status dot with attempt progress."""

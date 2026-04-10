@@ -6,6 +6,7 @@ import pytest
 
 from neurocad.core.agent import (
     AgentCallbacks,
+    _contains_refusal_intent,
     _execute_with_rollback,
     run,
 )
@@ -296,6 +297,39 @@ def test_run_non_retriable_errors():
                 assert result2.attempts == 1
                 assert "Unsupported FreeCAD API" in result2.error
                 assert mock_exec.call_count == 1
+
+
+def test_run_early_refusal():
+    """run() should return early refusal for file/import/external-resource intents."""
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    history = History()
+
+    # Use a keyword that triggers refusal
+    result = run("import a STEP file", mock_doc, mock_adapter, history)
+    assert result.ok is False
+    assert result.attempts == 0
+    assert "Unsupported operation" in result.error
+    # Adapter should not be called
+    assert not mock_adapter.complete.called
+
+
+def test_contains_refusal_intent():
+    """_contains_refusal_intent returns True only for file/import/external-resource keywords."""
+    # Positive cases (keywords present)
+    assert _contains_refusal_intent("import a file") is True
+    assert _contains_refusal_intent("load a file") is True   # 'file' keyword
+    assert _contains_refusal_intent("download from http://example.com") is True
+    assert _contains_refusal_intent("fetch url") is True
+    assert _contains_refusal_intent("https request") is True
+    # False positive cases (should not trigger)
+    assert _contains_refusal_intent("external diameter") is False   # 'external' removed
+    assert _contains_refusal_intent("resource management") is False # 'resource' removed
+    assert _contains_refusal_intent("filet") is False   # substring, word boundary prevents match
+    assert _contains_refusal_intent("important") is False   # contains 'import' but not whole word
+    # Edge: mixed case
+    assert _contains_refusal_intent("IMPORT a FILE") is True   # case-insensitive
+    assert _contains_refusal_intent("") is False
 
 
 if __name__ == "__main__":
