@@ -1,5 +1,5 @@
-# NeuroCad · Sprint Plans v0.6
-**Дата:** 2026-04-09 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
+# NeuroCad · Sprint Plans v0.7
+**Дата:** 2026-04-10 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 ---
 
@@ -72,15 +72,25 @@ Streaming UI (ProgressBar, chunk display) — в Sprint 3. Здесь тольк
 
 ---
 
-# Актуальное состояние на 2026-04-09
+# Актуальное состояние на 2026-04-10
 
-1. **Sprint 1**: функционально достигнут. Workbench, singleton dock, snapshot/debug path и базовая конфигурация работают в FreeCAD 1.1.
-2. **Sprint 2 / 2.1**: закрыт. End-to-end path стабилизирован на текущей архитектуре; автоматизированные gate'ы `.venv/bin/ruff check .`, `.venv/bin/mypy .`, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --tb=short -v` подтверждены.
-3. **Sprint 3**: завершён как feature + evidence sprint. Settings и Export реализованы; ручной benchmark во FreeCAD принят как финальный источник фактов для планирования следующего этапа. Главный подтверждённый провал — bucket `unsupported-requests`: система недостаточно надёжно отказывает на неподдержанных запросах.
-4. В коде есть осознанные отклонения от исходного Sprint 2 плана, и они должны считаться **новой нормой документа**, а не временным расхождением:
+1. **Последний подтверждённый сохранённый baseline проекта — Sprint 4.**
+   - Всё, что в этом репозитории можно считать текущим состоянием проекта, должно интерпретироваться как состояние **после Sprint 4**.
+   - Sprint 5 и любые более поздние claims не считаются текущим состоянием репозитория.
+2. **Sprint 5+ утрачены как project state.**
+   - Любые упоминания Sprint 5, Sprint 6, corrective scope, manual smoke на коммитах вне текущего дерева считаются историческими артефактами, а не подтверждённым текущим статусом.
+   - Такие материалы можно использовать только как архивный контекст для будущего восстановления, но не как основание писать `completed`.
+3. **Source of truth для текущего статуса проекта:**
+   - текущий код в репозитории;
+   - план и acceptance Sprint 4 в этом документе;
+   - архитектурные решения в `.roo/evals/decisions-log.md`, если они не противоречат коду.
+4. В коде есть осознанные отклонения от исходного Sprint 2 плана, и они должны считаться **нормой текущего baseline**:
    - dispatch в main thread сделан через `QObject + Signal(..., Qt.QueuedConnection)`, а не через `QTimer.singleShot(0, ...)`;
    - `executor.execute()` выполняет код синхронно в main thread; внутренний `threading.Thread` для `exec()` убран как небезопасный для FreeCAD document mutations;
    - hard timeout перенесён на LLM transport / worker handoff / UI watchdog, а не на сам `exec()` внутри FreeCAD.
+5. Практическое следствие для планирования:
+   - Sprint 4 можно считать выполненным baseline-этапом;
+   - всё после Sprint 4 должно либо перепроверяться заново в текущем дереве, либо планироваться как новая работа, а не как уже выполненное.
 
 ---
 
@@ -231,9 +241,86 @@ Sprint 3 принимается как завершённый этап **с по
 
 ---
 
-## Сводная таблица: что изменилось от v0.1 → v0.6
+# Sprint 4.1 — Release Recovery + Workbench Availability
+**Нед. 10 · Python 3.11 · FreeCAD 1.1**
+**Статус:** planned
 
-| Компонент | v0.1 (оригинал) | v0.6 (финал) |
+**Предусловие:** Sprint 4 считается последним подтверждённым baseline. Утраченные Sprint 5/6 не считаются текущим состоянием проекта, но их полезный scope поднимается сюда как recovery-план.
+
+## Цель
+
+Собрать в один короткий recovery-sprint всё, что было целью утраченных Sprint 5/6, но привязать это к текущему baseline после Sprint 4: восстановить manual smoke gate, закрыть узкие corrective defects по refusal/export/UI и добавить отдельный bootstrap/installability gate, чтобы NeuroCad не исчезал из workbench dropdown в FreeCAD.
+
+## Почему Sprint 4.1 нужен
+
+Архивные Sprint 5/6 описывали корректный corrective scope, но скриншот с отсутствующим `NeuroCad` в dropdown показывает ещё один класс риска: даже при исправном core/UI мод может не загрузиться как workbench вообще. Значит recovery scope должен покрывать не только refusal/export/autoscroll/icon, но и сам путь загрузки мода.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-TEST-003A     / Developer / Manual smoke baseline recovery                    / completed
+2. NC-DEV-CORE-012A     / Developer / Corrective scope: refusal + export contract       / planned
+3. NC-DEV-UI-005A       / Developer / Workbench icon + deterministic panel behavior     / planned
+4. NC-DEVOPS-INFRA-006A / DevOps    / Mod bootstrap, symlink and InitGui load sanity    / planned
+5. NC-PM-REVIEW-004A    / PM        / Release recovery review after Sprint 4 baseline   / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-TEST-003A** | Developer | 1 | Восстановить manual smoke как release gate поверх Sprint 4 | `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`, короткая reconciliation note | Есть актуальный smoke log для текущего дерева, а не для исторического коммита; отдельно проверены `workbench visibility`, `panel visibility`, `supported-simple`, `unsupported refusal`, `recovery`, `STEP/STL export`; log различает `UI says success` и `effect confirmed` | `TASK CODE: NC-DEV-TEST-003A` / Сначала ничего не чинить. Запустить ручной smoke в реальном FreeCAD по текущему baseline после Sprint 4 и оформить новый log. Не использовать старый Sprint 6 log как доказательство текущего состояния. |
+| **NC-DEV-CORE-012A** | Developer | 2 | Поднять из утраченных Sprint 5/6 узкий corrective scope для safe-fail и export contract | `core/agent.py`, `config/defaults.py`, `core/exporter.py`, `tests/test_agent.py`, `tests/test_exporter.py` | File/import/external-resource prompts дают ранний controlled refusal; STEP/STL export считается успешным только если файл реально создан и не пустой; изменения не расширяют capability scope и не меняют main-thread execution semantics | `TASK CODE: NC-DEV-CORE-012A` / Восстановить только подтверждённые corrective changes: ранний refusal для file/import/external-resource intents и верифицируемый export contract. Не превращать задачу в новый capability sprint. |
+| **NC-DEV-UI-005A** | Developer | 2 | Поднять из Sprint 6 UI-correctives и добавить явный workbench-availability guard | `InitGui.py`, `ui/panel.py`, `resources/icons/neurocad.svg`, `tests/test_panel.py`, `tests/test_workbench.py` или эквивалент | Иконка загружается без warning; чат скроллится через queued-scroll path; panel singleton не ломается; ошибки в icon/resource path не приводят к silent disappearance workbench; есть regression-test или checklist на успешный import `InitGui.py` | `TASK CODE: NC-DEV-UI-005A` / Восстановить icon path fix и deterministic autoscroll. Дополнительно зафиксировать bootstrap guard: любые top-level правки в `InitGui.py` должны быть безопасны и не должны ронять импорт workbench entry point. |
+| **NC-DEVOPS-INFRA-006A** | DevOps | 3 | Проверить bootstrap/installability path мода | `DEV_SETUP.md`, smoke note, optional bootstrap test/checklist | Документирован и проверен единственный корректный способ линковки мода в FreeCAD; `NeuroCad` появляется в dropdown при актуальном mod path; отдельно проверено, что layout мода содержит корректный `InitGui.py` в том месте, где его ждёт FreeCAD | `TASK CODE: NC-DEVOPS-INFRA-006A` / Проверить path `<FreeCAD.ConfigGet("UserAppData")>/Mod/neurocad`, структуру каталога мода и import path entry point. Не ограничиваться unit-тестами: нужен explicit bootstrap checklist для symptom class "workbench missing from dropdown". |
+| **NC-PM-REVIEW-004A** | PM | 4 | Ревью recovery-sprint как continuation Sprint 4 | Закрытый чеклист | Все recovery-defects либо закрыты, либо переоткрыты явно; workbench visibility подтверждена отдельно от panel logic; manual smoke и automated gate не смешиваются в один ложный signal | (1) `NeuroCad` виден в dropdown (2) активация workbench показывает panel (3) icon/resource fix не ломает bootstrap (4) file/import refusal не создаёт surrogate geometry (5) export success подтверждается файлом (6) autoscroll deterministic (7) automated gate clean (8) manual smoke для текущего дерева приложен |
+
+**Факт статуса на 2026-04-10:**
+- `NC-DEV-TEST-003A` — completed; артефакт: `tests/manual/NeuroCad Manual Smoke + Capability Test Log.md`.
+- Остальные задачи Sprint 4.1 остаются в статусе `planned`.
+
+## Что в задачах может приводить к результату на скриншоте
+
+Скриншот показывает не просто hidden panel, а более ранний сбой: `NeuroCad` отсутствует в списке workbench. Это значит, что проблема находится на уровне **bootstrap / entry point / install layout**, а не в обычной логике `CopilotPanel`.
+
+Наиболее вероятные источники такого симптома из scope утраченных Sprint 5/6:
+
+1. **Task icon/path fix в `InitGui.py`**
+   - Любая ошибка в top-level коде `InitGui.py` приводит к тому, что FreeCAD не может импортировать workbench entry point и просто не регистрирует `NeuroCad`.
+   - Особенно опасны top-level вызовы вроде `FreeCADGui.addIconPath(...)`, `addResourcePath(...)`, обращения к несуществующему API или к пути, который вычисляется с ошибкой.
+   - В этом случае symptom на скриншоте полностью ожидаем: workbench не появляется в dropdown вообще.
+
+2. **Неверный mod layout / symlink path**
+   - FreeCAD ищет `InitGui.py` в корне каталога мода.
+   - Если после recovery-задач изменился способ линковки или пользователь указывает на неправильный каталог, FreeCAD не видит entry point, и `NeuroCad` пропадает из списка workbench.
+   - Это особенно важно, потому что проект одновременно содержит repo root и каталог `neurocad/`, а ошибка в инструкции по symlink легко создаёт именно такой симптом.
+
+3. **Слишком агрессивная правка bootstrap ради icon resource registration**
+   - Missing icon сам по себе обычно не скрывает workbench; он даёт warning.
+   - Но попытка "починить иконку" через небезопасный top-level код уже может скрыть workbench полностью.
+   - Значит из Sprint 4.1 нужно поднимать не только acceptance "иконка видна", но и защиту "исправление иконки не ломает загрузку workbench".
+
+4. **Подмена проблемы UI-панели проблемой workbench**
+   - Задачи про autoscroll, export contract и refusal UX не должны приводить к такому скриншоту напрямую, потому что они выполняются уже после успешной загрузки мода.
+   - Поэтому symptom class на скриншоте почти наверняка связан не с `panel.py`, а с `InitGui.py`, структурой мода или инструкцией установки.
+
+## Диагностический вывод по скриншоту
+
+Если ориентироваться только на symptom, приоритет проверки должен быть таким:
+
+1. корректный ли mod path в `<UserAppData>/Mod/neurocad`;
+2. лежит ли `InitGui.py` в том месте, где его реально ожидает FreeCAD;
+3. нет ли import-time exception в `InitGui.py`;
+4. не сломал ли icon-path fix top-level импорт.
+
+То есть для Sprint 4.1 bootstrap/installability должен быть выделен в отдельную задачу, а не оставлен как побочный эффект UI-fix.
+
+---
+
+## Сводная таблица: что изменилось от v0.1 → v0.7
+
+| Компонент | v0.1 (оригинал) | v0.7 (финал) |
 |---|---|---|
 | Workbench entry | `workbench.py` отдельный файл | Всё в `InitGui.py` (ghbalf паттерн) |
 | Dock creation | `addDockWidget` в `Initialize()` | `get_panel_dock()` singleton в `panel.py` |
@@ -249,3 +336,4 @@ Sprint 3 принимается как завершённый этап **с по
 | Input guard | нет | `_set_busy(True/False)` в panel |
 | Exporter | `exportStep(str(path))` без guard | + `Part.OCCError` catch + null shape filter |
 | Benchmark evidence | не определено | ручной FreeCAD benchmark принят как baseline; Sprint 4 переводит его в release-grade safety gate |
+| Recovery after Sprint 4 | не определено | поднят в `Sprint 4.1` как merged-scope из утраченных Sprint 5/6 + отдельный bootstrap/installability gate |

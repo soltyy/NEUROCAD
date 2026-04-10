@@ -1,5 +1,9 @@
 # NeuroCad Manual Smoke + Capability Test Log
 
+> Status note: this file is a historical archive from a later lost project state.
+> It is **not** the source of truth for the current repository baseline.
+> Current project status is tracked from the preserved Sprint 4 baseline in `doc/SPRINT_PLANS.md`.
+
 ## Summary
 - Date: 2026-04-10
 - FreeCAD version: FreeCAD 1.1.0
