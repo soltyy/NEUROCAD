@@ -10,53 +10,79 @@ class MessageBubble(QtWidgets.QFrame):
         super().__init__(parent)
         self.role = role
         self._text = text
+
+        # Create label (common for all roles)
         self._label = QtWidgets.QLabel(text, self)
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # type: ignore[attr-defined]
 
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._label)
-        layout.setContentsMargins(10, 8, 10, 8)
+        # Layout differs per role
+        if role == "assistant":
+            # Horizontal layout: avatar left, label right
+            hbox = QtWidgets.QHBoxLayout(self)
+            # Avatar "N"
+            self._avatar = QtWidgets.QLabel("N", self)
+            self._avatar.setFixedSize(24, 24)
+            self._avatar.setStyleSheet("""
+                QLabel {
+                    background-color: #2563eb;
+                    border-radius: 12px;
+                    color: white;
+                    font-weight: bold;
+                    qproperty-alignment: AlignCenter;
+                }
+            """)
+            hbox.addWidget(self._avatar)
+            hbox.addWidget(self._label, 1)  # stretch
+            hbox.setContentsMargins(10, 8, 10, 8)
+            # No card styling (transparent background, no border)
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: transparent;
+                    border: none;
+                }
+            """)
+        else:
+            # Vertical layout for user and feedback
+            vbox = QtWidgets.QVBoxLayout(self)
+            vbox.addWidget(self._label)
+            vbox.setContentsMargins(10, 8, 10, 8)
 
-        # Basic styling based on role
-        if role == "user":
-            self.setStyleSheet("""
-                MessageBubble {
-                    background-color: #e3f2fd;
-                    border: 1px solid #90caf9;
-                    border-radius: 12px;
-                }
-            """)
-        elif role == "assistant":
-            self.setStyleSheet("""
-                MessageBubble {
-                    background-color: #f5f5f5;
-                    border: 1px solid #e0e0e0;
-                    border-radius: 12px;
-                }
-            """)
-        else:  # feedback, system, etc.
-            # Determine feedback color based on text content
-            text_lower = text.lower()
-            if any(word in text_lower for word in ("success", "exported")):
-                bg = "#e8f5e9"
-                border = "#81c784"
-            elif any(word in text_lower for word in ("unsupported", "timed out")):
-                bg = "#fff9c4"
-                border = "#ffd54f"
-            elif any(word in text_lower for word in ("failed", "error")):
-                bg = "#ffebee"
-                border = "#ef5350"
-            else:
-                bg = "#f5f5f5"
-                border = "#bdbdbd"
-            self.setStyleSheet(f"""
-                MessageBubble {{
-                    background-color: {bg};
-                    border: 1px solid {border};
-                    border-radius: 12px;
-                }}
-            """)
+            if role == "user":
+                self.setStyleSheet("""
+                    MessageBubble {
+                        background-color: #f4f4f4;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 12px;
+                    }
+                """)
+            else:  # feedback, system, etc.
+                # Determine feedback color based on text content
+                text_lower = text.lower()
+                if any(word in text_lower for word in ("success", "exported")):
+                    border_color = "#81c784"   # green
+                elif any(word in text_lower for word in ("unsupported", "timed out")):
+                    border_color = "#ffd54f"   # yellow
+                elif any(word in text_lower for word in ("failed", "error")):
+                    border_color = "#ef5350"   # red
+                else:
+                    border_color = "#bdbdbd"   # gray
+                # Transparent background, left border only
+                self.setStyleSheet(f"""
+                    MessageBubble {{
+                        background-color: transparent;
+                        border: none;
+                        border-left: 3px solid {border_color};
+                        border-radius: 0px;
+                    }}
+                """)
+                # Font style: 11px italic
+                self._label.setStyleSheet("""
+                    QLabel {
+                        font-size: 11px;
+                        font-style: italic;
+                    }
+                """)
 
     def append_text(self, chunk: str):
         """Append text to the bubble (streaming)."""

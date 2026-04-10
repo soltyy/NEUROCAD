@@ -120,9 +120,30 @@ class CopilotPanel(QtWidgets.QDockWidget):
         # Input elements
         self._input = QtWidgets.QLineEdit()
         self._input.setPlaceholderText("Type your CAD request...")
-        self._send_btn = QtWidgets.QPushButton("Send")
-        self._snapshot_btn = QtWidgets.QPushButton("Show Snapshot")
+        self._send_btn = QtWidgets.QPushButton("→")
+        self._snapshot_btn = QtWidgets.QPushButton("Snapshot")
         self._export_btn = QtWidgets.QPushButton("Export")
+        # Style secondary buttons (Snapshot, Export)
+        self._snapshot_btn.setFixedHeight(28)
+        self._export_btn.setFixedHeight(28)
+        secondary_style = """
+            QPushButton {
+                background-color: #f8f8f8;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #e8e8e8;
+            }
+            QPushButton:disabled {
+                background-color: #f0f0f0;
+                color: #aaa;
+            }
+        """
+        self._snapshot_btn.setStyleSheet(secondary_style)
+        self._export_btn.setStyleSheet(secondary_style)
         # Style send button as round blue 30x30
         self._send_btn.setFixedSize(30, 30)
         self._send_btn.setStyleSheet("""
@@ -162,24 +183,33 @@ class CopilotPanel(QtWidgets.QDockWidget):
         # Assemble
         layout.addWidget(scroll)
 
-        # Bottom container (Claude-style input)
-        bottom_container = QtWidgets.QVBoxLayout()
-        bottom_container.setSpacing(6)
+        # Unified Claude-style input container
+        self._input_box = QtWidgets.QFrame()
+        self._input_box.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+        """)
+        input_box_layout = QtWidgets.QVBoxLayout(self._input_box)
+        input_box_layout.setContentsMargins(12, 12, 12, 12)
+        input_box_layout.setSpacing(6)
 
         # Status label
-        bottom_container.addWidget(self._status_label)
+        input_box_layout.addWidget(self._status_label)
 
         # Input row (just line edit)
         input_row = QtWidgets.QHBoxLayout()
         input_row.addWidget(self._input, 1)
-        bottom_container.addLayout(input_row)
+        input_box_layout.addLayout(input_row)
 
         # Divider
         divider = QtWidgets.QFrame()
         divider.setFrameShape(QtWidgets.QFrame.HLine)
         divider.setStyleSheet("color: #e0e0e0;")
         divider.setFixedHeight(1)
-        bottom_container.addWidget(divider)
+        input_box_layout.addWidget(divider)
 
         # Toolbar row with compact secondary buttons and round send button
         toolbar_row = QtWidgets.QHBoxLayout()
@@ -187,9 +217,9 @@ class CopilotPanel(QtWidgets.QDockWidget):
         toolbar_row.addWidget(self._export_btn)
         toolbar_row.addStretch()
         toolbar_row.addWidget(self._send_btn)
-        bottom_container.addLayout(toolbar_row)
+        input_box_layout.addLayout(toolbar_row)
 
-        layout.addLayout(bottom_container)
+        layout.addWidget(self._input_box)
 
     def _connect_signals(self):
         """Connect UI signals."""
@@ -201,7 +231,10 @@ class CopilotPanel(QtWidgets.QDockWidget):
     def _add_message(self, role: str, text: str):
         """Append a message bubble to the chat area."""
         bubble = MessageBubble(role, text)
-        self._scroll_layout.addWidget(bubble)
+        if role == "user":
+            self._scroll_layout.addWidget(bubble, alignment=Qt.AlignRight)  # type: ignore[attr-defined]
+        else:
+            self._scroll_layout.addWidget(bubble, alignment=Qt.AlignLeft)  # type: ignore[attr-defined]
         # Scroll to bottom
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
