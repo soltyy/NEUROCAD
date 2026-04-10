@@ -117,17 +117,29 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._scroll_layout = scroll_layout
         self._scroll_content = scroll_content
 
-        # Input row
-        input_row = QtWidgets.QHBoxLayout()
+        # Input elements
         self._input = QtWidgets.QLineEdit()
         self._input.setPlaceholderText("Type your CAD request...")
         self._send_btn = QtWidgets.QPushButton("Send")
         self._snapshot_btn = QtWidgets.QPushButton("Show Snapshot")
         self._export_btn = QtWidgets.QPushButton("Export")
-        input_row.addWidget(self._input, 1)
-        input_row.addWidget(self._send_btn)
-        input_row.addWidget(self._snapshot_btn)
-        input_row.addWidget(self._export_btn)
+        # Style send button as round blue 30x30
+        self._send_btn.setFixedSize(30, 30)
+        self._send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196f3;
+                border: none;
+                border-radius: 15px;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976d2;
+            }
+            QPushButton:disabled {
+                background-color: #b0bec5;
+            }
+        """)
 
         self._request_watchdog = QtCore.QTimer(self)
         self._request_watchdog.setSingleShot(True)
@@ -143,22 +155,41 @@ class CopilotPanel(QtWidgets.QDockWidget):
         title_layout.addWidget(self._status_dot)
         self.setTitleBarWidget(title_widget)
 
-        # Status line
-        status_layout = QtWidgets.QHBoxLayout()
+        # Status label (will be placed in bottom container)
         self._status_label = QtWidgets.QLabel("Ready")
         self._status_label.setStyleSheet("color: #666; font-style: italic;")
-        self._progress_bar = QtWidgets.QProgressBar()
-        self._progress_bar.setRange(0, 1)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setVisible(False)
-        status_layout.addWidget(self._status_label)
-        status_layout.addWidget(self._progress_bar)
-        status_layout.setStretch(0, 1)
 
         # Assemble
         layout.addWidget(scroll)
-        layout.addLayout(status_layout)
-        layout.addLayout(input_row)
+
+        # Bottom container (Claude-style input)
+        bottom_container = QtWidgets.QVBoxLayout()
+        bottom_container.setSpacing(6)
+
+        # Status label
+        bottom_container.addWidget(self._status_label)
+
+        # Input row (just line edit)
+        input_row = QtWidgets.QHBoxLayout()
+        input_row.addWidget(self._input, 1)
+        bottom_container.addLayout(input_row)
+
+        # Divider
+        divider = QtWidgets.QFrame()
+        divider.setFrameShape(QtWidgets.QFrame.HLine)
+        divider.setStyleSheet("color: #e0e0e0;")
+        divider.setFixedHeight(1)
+        bottom_container.addWidget(divider)
+
+        # Toolbar row with compact secondary buttons and round send button
+        toolbar_row = QtWidgets.QHBoxLayout()
+        toolbar_row.addWidget(self._snapshot_btn)
+        toolbar_row.addWidget(self._export_btn)
+        toolbar_row.addStretch()
+        toolbar_row.addWidget(self._send_btn)
+        bottom_container.addLayout(toolbar_row)
+
+        layout.addLayout(bottom_container)
 
     def _connect_signals(self):
         """Connect UI signals."""
@@ -189,11 +220,8 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._status_dot.set_state("thinking" if busy else "idle")
         if busy:
             self._status_label.setText("Thinking...")
-            self._progress_bar.setVisible(False)  # hide until attempt numbers known
         else:
             self._status_label.setText("Ready")
-            self._progress_bar.setVisible(False)
-            self._progress_bar.setValue(0)
 
     def _on_submit(self):
         """Handle Send button or Enter press."""
@@ -254,10 +282,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         """Update status dot with attempt progress."""
         log_info("panel.attempt", "agent attempt", attempt=n, max_attempts=mx)
         self._status_dot.set_state("thinking")
-        # Update progress bar
-        self._progress_bar.setRange(0, mx)
-        self._progress_bar.setValue(n)
-        self._progress_bar.setVisible(True)
         # Update status label
         self._status_label.setText(f"Attempt {n} of {mx}")
         if n > 1:

@@ -338,6 +338,37 @@ Sprint 3 принимается как завершённый этап **с по
 
 ---
 
+# Sprint 5.1 — UI Refresh + Visual Hardening
+**Нед. 11 · Python 3.11 · FreeCAD 1.1**
+**Статус:** planned
+
+**Предусловие:** Sprint 4.1 закрыт как recovery baseline. Sprint 5.1 не расширяет capability scope и не меняет main-thread execution semantics; он поднимает только визуальное качество release UI. Icon path fix уже закрыт отдельным фиксом и не входит в scope этого спринта.
+
+## Цель
+
+Перевести панель NeuroCad на более аккуратный Claude-style layout без архитектурного дрейфа: улучшить иерархию сообщений и собрать input area в единый visual container, не меняя runtime-пайплайн.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-UI-005A      / Developer / Claude-style panel layout refresh                    / planned
+2. NC-PM-REVIEW-005A   / PM        / Review UI refresh against release constraints         / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-UI-005A** | Developer | 1 | Переработать `panel/widgets` под Variant B (Claude-style layout) | `ui/widgets.py`, `ui/panel.py`, минимальные test fixes при необходимости | `MessageBubble` различает `user` / `assistant` / `feedback` по новой visual semantics; нижняя часть панели заменена на `status label + input box + toolbar row`; `_progress_bar` удалён без регрессии worker/agent path; `_status_dot` сохранён; `QLineEdit` остаётся; assistant streaming bubble не ломается | `TASK CODE: NC-DEV-UI-005A` / Переработать `neurocad/ui/widgets.py` и `neurocad/ui/panel.py` под Вариант B (Claude-style layout) без изменения runtime-логики worker/agent/adapter. В `MessageBubble`: `user` — bubble справа с фоном `#f4f4f4`, border `#e0e0e0`, radius `12px`, margins `10,8,10,8`; `assistant` — без карточки, слева avatar `N` 24x24 с `#2563eb`, справа обычный `QLabel`; `feedback` — transparent background и `border-left: 3px solid` с цветом по semantic bucket (`Success/Exported` зелёный, `Unsupported/Timed out` жёлтый, `Failed/Error/error` красный, иначе серый), font `11px italic`. В `panel.py`: убрать старые `input_row` и `status_layout`; оставить `status label`, затем единый `input box` с `QLineEdit` сверху, divider, toolbar row снизу; `Snapshot` и `Export` — компактные secondary buttons, send — круглая синяя кнопка `30x30`; `_set_busy()` и `_on_attempt()` очистить от `_progress_bar`; `_on_status()` обновляет только `status label` и feedback bubbles. Не трогать `worker`, `agent`, `adapter`, `_on_exec_needed`, `_on_worker_done`, `_on_worker_error`, `_status_dot`, `QLineEdit`, `processEvents()`. Тесты панели менять только минимально, если сломаются из-за удаления `_progress_bar` или layout-контракта. |
+| **NC-PM-REVIEW-005A** | PM | 2 | Проверить UI refresh как cosmetic-only continuation Sprint 4.1 | Закрытый checklist | Layout стал чище без регрессии runtime semantics; assistant bubble stream append не сломан; feedback states визуально различимы; automated gate остаётся clean | (1) Claude-style layout визуально применён (2) `_status_dot` сохранён (3) `QLineEdit` сохранён (4) `_progress_bar` удалён без регрессии статусов (5) assistant streaming bubble работает (6) feedback colors различимы по semantic bucket (7) worker/agent path не изменён (8) ruff/mypy/pytest clean |
+
+**Факт статуса на 2026-04-11:**
+- `NC-DEV-UI-005A` — planned; implementation not started in current tree.
+- `NC-PM-REVIEW-005A` — planned.
+
+---
+
 ## Сводная таблица: что изменилось от v0.1 → v0.7
 
 | Компонент | v0.1 (оригинал) | v0.7 (финал) |

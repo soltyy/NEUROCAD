@@ -217,35 +217,44 @@ def test_panel_shows_compact_statuses(qapp):
     dock._add_message.assert_called_once_with("feedback", "Timed out")
 
 
-def test_status_label_and_progress_bar_updates(qapp):
-    """_set_busy updates status label, progress bar, and export button."""
+def test_status_label_and_enabled_state_updates(qapp):
+    """_set_busy updates status label and enabled state of UI controls."""
     dock = CopilotPanel()
     dock._status_label = MagicMock()
-    dock._progress_bar = MagicMock()
+    dock._input = MagicMock()
+    dock._send_btn = MagicMock()
+    dock._snapshot_btn = MagicMock()
     dock._export_btn = MagicMock()
 
     dock._set_busy(True)
     dock._status_label.setText.assert_called_once_with("Thinking...")
-    dock._progress_bar.setVisible.assert_called_once_with(False)
+    dock._input.setEnabled.assert_called_once_with(False)
+    dock._send_btn.setEnabled.assert_called_once_with(False)
+    dock._snapshot_btn.setEnabled.assert_called_once_with(False)
     dock._export_btn.setEnabled.assert_called_once_with(False)
 
     dock._status_label.reset_mock()
-    dock._progress_bar.reset_mock()
+    dock._input.reset_mock()
+    dock._send_btn.reset_mock()
+    dock._snapshot_btn.reset_mock()
     dock._export_btn.reset_mock()
 
     dock._set_busy(False)
     dock._status_label.setText.assert_called_once_with("Ready")
-    dock._progress_bar.setVisible.assert_called_once_with(False)
+    dock._input.setEnabled.assert_called_once_with(True)
+    dock._send_btn.setEnabled.assert_called_once_with(True)
+    dock._snapshot_btn.setEnabled.assert_called_once_with(True)
     dock._export_btn.setEnabled.assert_called_once_with(True)
 
 
-def test_on_attempt_updates_progress_bar(qapp):
-    """_on_attempt updates progress bar with attempt numbers."""
+def test_on_attempt_updates_status_label(qapp):
+    """_on_attempt updates status label and adds retry feedback."""
     dock = CopilotPanel()
-    dock._progress_bar = MagicMock()
+    dock._status_label = MagicMock()
+    dock._add_message = MagicMock()
     dock._on_attempt(2, 5)
-    dock._progress_bar.setRange.assert_called_once_with(0, 5)
-    dock._progress_bar.setValue.assert_called_once_with(2)
+    dock._status_label.setText.assert_called_once_with("Attempt 2 of 5")
+    dock._add_message.assert_called_once_with("feedback", "Retrying")
 
 
 def test_export_button_triggers_handler(qapp):
@@ -298,8 +307,6 @@ def test_last_new_objects_updated_on_worker_done(qapp):
     mock_result.new_objects = ["Box"]
     dock._on_worker_done(mock_result)
     assert dock._last_new_objects == []
-
-
 def test_initgui_import_succeeds():
     """Import neurocad.InitGui with mocked FreeCADGui should not raise."""
     import importlib
@@ -317,6 +324,25 @@ def test_initgui_import_succeeds():
         # Ensure registration calls were made (allow extra calls from previous tests)
         assert mock_add_cmd.call_count >= 2
         assert mock_add_wb.call_count >= 1
+
+
+def test_repeated_on_chunk_appends_to_same_bubble(qapp):
+    """Multiple _on_chunk calls append to a single assistant bubble."""
+    from neurocad.ui.widgets import MessageBubble
+    dock = CopilotPanel()
+    # First chunk creates bubble
+    dock._on_chunk("Hello")
+    assert hasattr(dock, "_current_assistant_bubble")
+    bubble = dock._current_assistant_bubble
+    assert isinstance(bubble, MessageBubble)
+    assert bubble.role == "assistant"
+    assert bubble._text == "Hello"
+    # Second chunk appends
+    dock._on_chunk(" world")
+    assert dock._current_assistant_bubble is bubble  # same bubble
+    assert bubble._text == "Hello world"
+
+
 
 
 if __name__ == "__main__":

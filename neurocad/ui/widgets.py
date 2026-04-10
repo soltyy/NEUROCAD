@@ -36,12 +36,26 @@ class MessageBubble(QtWidgets.QFrame):
                 }
             """)
         else:  # feedback, system, etc.
-            self.setStyleSheet("""
-                MessageBubble {
-                    background-color: #fff8e1;
-                    border: 1px solid #ffd54f;
+            # Determine feedback color based on text content
+            text_lower = text.lower()
+            if any(word in text_lower for word in ("success", "exported")):
+                bg = "#e8f5e9"
+                border = "#81c784"
+            elif any(word in text_lower for word in ("unsupported", "timed out")):
+                bg = "#fff9c4"
+                border = "#ffd54f"
+            elif any(word in text_lower for word in ("failed", "error")):
+                bg = "#ffebee"
+                border = "#ef5350"
+            else:
+                bg = "#f5f5f5"
+                border = "#bdbdbd"
+            self.setStyleSheet(f"""
+                MessageBubble {{
+                    background-color: {bg};
+                    border: 1px solid {border};
                     border-radius: 12px;
-                }
+                }}
             """)
 
     def append_text(self, chunk: str):
