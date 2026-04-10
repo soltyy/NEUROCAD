@@ -1,33 +1,32 @@
-"""FreeCAD workbench entry point (ghbalf pattern)."""
+"""FreeCAD workbench entry point."""
 
-import FreeCADGui  # type: ignore
+import os
+import FreeCADGui as Gui
+
+_MOD_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class NeuroCadWorkbench(FreeCADGui.Workbench):
+class NeuroCadWorkbench(Gui.Workbench):
     """NeuroCad workbench."""
 
     MenuText = "NeuroCad"
-    ToolTip = "AI‑powered CAD assistant"
-    Icon = """placeholder"""
+    ToolTip  = "AI-powered CAD assistant"
+    Icon     = os.path.join(_MOD_DIR, "resources", "icons", "neurocad.svg")
 
     def Initialize(self):
-        """Called when workbench is loaded. Do NOT create dock widgets here."""
-        # Create toolbar and menu
+        Gui.addCommand("NeuroCad_OpenChat", OpenChatCommand())
+        Gui.addCommand("NeuroCad_Settings", SettingsCommand())
         self.appendToolbar("NeuroCad", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
         self.appendMenu("NeuroCad", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
 
     def Activated(self):
-        """Called when the workbench is activated."""
         from neurocad.ui.panel import get_panel_dock
-
         dock = get_panel_dock()
         if dock:
             dock.show()
 
     def Deactivated(self):
-        """Called when the workbench is deactivated."""
         from neurocad.ui.panel import get_panel_dock
-
         dock = get_panel_dock(create=False)
         if dock:
             dock.hide()
@@ -37,18 +36,15 @@ class NeuroCadWorkbench(FreeCADGui.Workbench):
 
 
 class OpenChatCommand:
-    """Command to open the NeuroCad chat panel."""
-
     def GetResources(self):
         return {
-            "Pixmap": "neurocad.svg",  # placeholder
+            "Pixmap": os.path.join(_MOD_DIR, "resources", "icons", "neurocad.svg"),
             "MenuText": "Open Chat",
             "ToolTip": "Open NeuroCad chat panel",
         }
 
     def Activated(self):
         from neurocad.ui.panel import get_panel_dock
-
         dock = get_panel_dock()
         if dock:
             dock.show()
@@ -59,33 +55,26 @@ class OpenChatCommand:
 
 
 class SettingsCommand:
-    """Command to open settings dialog."""
-
     def GetResources(self):
         return {
-            "Pixmap": "preferences-system.svg",  # placeholder
+            "Pixmap": "preferences-system.svg",
             "MenuText": "Settings",
             "ToolTip": "Configure LLM provider and API key",
         }
 
     def Activated(self):
-        import FreeCADGui
-
         from neurocad.ui.panel import get_panel_dock
         from neurocad.ui.settings import SettingsDialog
-        parent = FreeCADGui.getMainWindow()
+        parent = Gui.getMainWindow()
         dlg = SettingsDialog(parent)
         result = dlg.exec()
-        # If dialog was accepted, update panel's adapter if needed
         if result == SettingsDialog.Accepted:
             adapter = dlg.get_adapter()
             panel = get_panel_dock(create=False)
             if adapter is not None:
-                # Use once session adapter
                 if panel is not None:
                     panel.set_adapter(adapter)
             else:
-                # Saved to keyring; panel should reload config
                 if panel is not None:
                     panel._init_adapter()
 
@@ -93,7 +82,4 @@ class SettingsCommand:
         return True
 
 
-# Register commands and workbench
-FreeCADGui.addCommand("NeuroCad_OpenChat", OpenChatCommand())
-FreeCADGui.addCommand("NeuroCad_Settings", SettingsCommand())
-FreeCADGui.addWorkbench(NeuroCadWorkbench())
+Gui.addWorkbench(NeuroCadWorkbench())
