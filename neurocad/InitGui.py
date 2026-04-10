@@ -1,6 +1,12 @@
 """FreeCAD workbench entry point (ghbalf pattern)."""
 
+import inspect
+import os
+
 import FreeCADGui  # type: ignore
+
+_wb_dir = os.path.dirname(inspect.getfile(inspect.currentframe()))
+FreeCADGui.addIconPath(os.path.join(_wb_dir, "resources", "icons"))
 
 
 class NeuroCadWorkbench(FreeCADGui.Workbench):
@@ -8,7 +14,7 @@ class NeuroCadWorkbench(FreeCADGui.Workbench):
 
     MenuText = "NeuroCad"
     ToolTip = "AI‑powered CAD assistant"
-    Icon = """placeholder"""
+    Icon = "neurocad.svg"
 
     def Initialize(self):
         """Called when workbench is loaded. Do NOT create dock widgets here."""
