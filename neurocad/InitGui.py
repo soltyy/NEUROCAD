@@ -69,7 +69,7 @@ class SettingsCommand:
         }
 
     def Activated(self):
-        import FreeCADGui
+        import FreeCADGui # type: ignore
 
         from neurocad.ui.panel import get_panel_dock
         from neurocad.ui.settings import SettingsDialog
