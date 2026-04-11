@@ -5,6 +5,7 @@ Contains get_panel_dock() lazy singleton and CopilotPanel QDockWidget.
 
 from ..config.config import load as load_config
 from ..core.active_document import get_active_document
+from ..core.audit import init_audit_log, audit_log
 from ..core.debug import log_error, log_info, log_warn
 from ..core.history import History
 from ..core.worker import LLMWorker
@@ -110,6 +111,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._request_watchdog = None
         self._last_new_objects = []
         self._scroll_pending = False
+        self._adapter_error = None
 
         self._build_ui()
         self._connect_signals()
@@ -120,6 +122,8 @@ class CopilotPanel(QtWidgets.QDockWidget):
         try:
             config = load_config()
             self._config = config
+            # Initialize audit logging based on config
+            init_audit_log(config)
             log_info(
                 "panel.init_adapter",
                 "loading adapter",
@@ -134,20 +138,66 @@ class CopilotPanel(QtWidgets.QDockWidget):
                 "adapter loaded",
                 adapter_type=type(self._adapter).__name__,
             )
+            # Clear any previous error
+            self._adapter_error = None
+            self._update_status_for_adapter()
         except Exception as e:
             # If no API key is configured, we'll keep adapter as None
             # and show an error when user tries to submit.
             if not self._config:
                 self._config = load_config()
             self._adapter = None
+            self._adapter_error = e
             log_warn("panel.init_adapter", "adapter unavailable", error=e)
+            # Audit log the failure
+            audit_log(
+                "adapter_init_failure",
+                {
+                    "provider": self._config.get("provider"),
+                    "error": str(e),
+                },
+            )
+            self._update_status_for_adapter()
+
+    def _update_status_for_adapter(self):
+        """Update status label based on adapter state."""
+        if self._adapter is not None:
+            self._status_label.setText("Ready")
+            self._status_label.setStyleSheet("color: #666; font-style: italic;")
+        else:
+            # No adapter, show error if any
+            if self._adapter_error is None:
+                self._status_label.setText("No LLM adapter configured")
+                self._status_label.setStyleSheet("color: #666; font-style: italic;")
+            else:
+                # Determine user-friendly message
+                err = self._adapter_error
+                if isinstance(err, ValueError):
+                    err_text = str(err)
+                    # Differentiate missing key vs keyring unavailable
+                    if "install the `keyring` package" in err_text:
+                        msg = "Secure storage unavailable"
+                    elif "No API key found" in err_text or "No API key found for provider" in err_text:
+                        msg = "Missing API key"
+                    elif "keyring" in err_text.lower():
+                        msg = "Secure storage unavailable"
+                    elif "Unknown provider" in err_text:
+                        msg = f"Unknown provider: {err_text.split(':')[-1].strip()}"
+                    else:
+                        msg = f"Configuration error: {err_text[:60]}"
+                else:
+                    # Other exceptions (e.g., adapter init failure)
+                    msg = f"Adapter failed: {type(err).__name__}"
+                self._status_label.setText(f"Error: {msg}")
+                self._status_label.setStyleSheet("color: #dc2626; font-style: italic;")
 
     def set_adapter(self, adapter):
         """Set adapter directly (e.g., from Use once session)."""
         self._adapter = adapter
-        if adapter is not None and hasattr(adapter, "timeout"):
-            self._config["timeout"] = float(adapter.timeout)
         if adapter is not None:
+            self._adapter_error = None
+            if hasattr(adapter, "timeout"):
+                self._config["timeout"] = float(adapter.timeout)
             from ..core.debug import log_info
 
             log_info(
@@ -156,9 +206,11 @@ class CopilotPanel(QtWidgets.QDockWidget):
                 adapter_type=type(adapter).__name__,
             )
         else:
+            self._adapter_error = None
             from ..core.debug import log_warn
 
             log_warn("panel.set_adapter", "adapter cleared")
+        self._update_status_for_adapter()
 
     def _build_ui(self):
         """Create UI elements."""
@@ -377,8 +429,29 @@ class CopilotPanel(QtWidgets.QDockWidget):
             self._add_message("feedback", "No active document.")
             return
         if self._adapter is None:
-            log_warn("panel.submit", "blocked: adapter is not configured")
-            self._add_message("feedback", "LLM adapter not configured. Set API key in Settings.")
+            log_warn("panel.submit", "blocked: adapter is not configured", error=self._adapter_error)
+            # Determine user-friendly error message
+            if self._adapter_error is None:
+                msg = "LLM adapter not configured. Set API key in Settings."
+            else:
+                err = self._adapter_error
+                if isinstance(err, ValueError):
+                    err_text = str(err)
+                    # Differentiate missing key vs keyring unavailable
+                    if "install the `keyring` package" in err_text:
+                        msg = "Secure storage unavailable. Install keyring package or set environment variable."
+                    elif "No API key found" in err_text or "No API key found for provider" in err_text:
+                        msg = "Missing API key. Set API key in Settings or environment variable."
+                    elif "keyring" in err_text.lower():
+                        msg = "Secure storage unavailable. Install keyring package or set environment variable."
+                    elif "Unknown provider" in err_text:
+                        provider = err_text.split(':')[-1].strip()
+                        msg = f"Unknown provider '{provider}'. Check Settings."
+                    else:
+                        msg = f"Configuration error: {err_text[:80]}"
+                else:
+                    msg = f"Adapter initialization failed: {type(err).__name__}"
+            self._add_message("feedback", msg)
             return
         if self._worker is not None and self._worker.is_running():
             # Already running, ignore

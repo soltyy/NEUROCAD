@@ -22,14 +22,28 @@ def _strip_safe_imports(code: str) -> str:
     return "\n".join(lines).strip()
 
 
+def extract_code_blocks(raw: str) -> list[str]:
+    """Return a list of normalized Python blocks from an LLM response."""
+    if not raw:
+        return []
+    # Find all fenced python blocks
+    py_blocks = _FENCED_PYTHON_RE.findall(raw)
+    if py_blocks:
+        return [_strip_safe_imports(b.strip()) for b in py_blocks if b.strip()]
+    # Fallback to any fenced blocks
+    any_blocks = _FENCED_ANY_RE.findall(raw)
+    if any_blocks:
+        return [_strip_safe_imports(b.strip()) for b in any_blocks if b.strip()]
+    # No fences, treat entire raw as one block
+    stripped = raw.strip()
+    return [_strip_safe_imports(stripped)] if stripped else []
+
+
 def extract_code(raw: str) -> str:
     """Return a single normalized Python block from an LLM response."""
-    if not raw:
+    blocks = extract_code_blocks(raw)
+    if not blocks:
         return ""
-
-    match = _FENCED_PYTHON_RE.search(raw)
-    if match is None:
-        match = _FENCED_ANY_RE.search(raw)
-
-    code = match.group(1).strip() if match else raw.strip()
-    return _strip_safe_imports(code)
+    # For backward compatibility, return the first block.
+    # (Historically, extract_code returned the first fenced block or the whole raw.)
+    return blocks[0]

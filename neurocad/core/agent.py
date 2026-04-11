@@ -7,12 +7,14 @@ from dataclasses import dataclass
 
 from neurocad.config.defaults import REFUSAL_KEYWORDS
 
-from .code_extractor import extract_code
+from .code_extractor import extract_code, extract_code_blocks
 from .debug import log_error, log_info, log_warn
 from .executor import ExecResult, execute
 from .history import History, Role
 from .prompt import build_system
 from .validator import validate
+
+from .audit import audit_log, get_correlation_id
 
 
 @dataclass
@@ -196,11 +198,36 @@ def run(
     history.add(Role.USER, text)
     log_info("agent.run", "history updated with user prompt", text=text)
     callbacks.on_status("history updated")
+    # Audit log
+    audit_log(
+        "agent_start",
+        {
+            "text_preview": text[:200],
+            "provider": getattr(adapter, "provider", type(adapter).__name__),
+            "model": getattr(adapter, "model", "unknown"),
+            "document_name": getattr(doc, "Name", None),
+        },
+        correlation_id=get_correlation_id(),
+    )
 
     # Early refusal for file/import/external-resource intents
     if _contains_refusal_intent(text):
         log_info("agent.run", "early refusal for file/import/external-resource intent", text=text)
         callbacks.on_status("unsupported file/import/external-resource operation")
+        # Audit log
+        audit_log(
+            "agent_error",
+            {
+                "error_type": "early_refusal",
+                "text_preview": text[:200],
+                "provider": getattr(adapter, "provider", type(adapter).__name__),
+                "model": getattr(adapter, "model", "unknown"),
+                "document_name": getattr(doc, "Name", None),
+                "attempts": 0,
+                "error": "Unsupported operation: file/import/external-resource operations are not supported.",
+            },
+            correlation_id=get_correlation_id(),
+        )
         return AgentResult(
             ok=False,
             attempts=0,
@@ -260,6 +287,20 @@ def run(
         except Exception as e:
             log_error("agent.run", "adapter call failed", error=e)
             callbacks.on_status(f"LLM call failed: {e}")
+            # Audit log
+            audit_log(
+                "agent_error",
+                {
+                    "error_type": "llm_call_failed",
+                    "text_preview": text[:200],
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                    "attempts": attempts,
+                    "error": str(e),
+                },
+                correlation_id=get_correlation_id(),
+            )
             return AgentResult(
                 ok=False,
                 attempts=attempts,
@@ -268,15 +309,30 @@ def run(
                 rollback_count=0,
             )
 
-        # Extract code
-        code = extract_code(llm_text)
-        log_info("agent.run", "code extracted", chars=len(code), preview=code[:200])
-        callbacks.on_status(f"code extracted, chars={len(code)}")
-        if not code.strip():
+        # Extract code blocks
+        blocks = extract_code_blocks(llm_text)
+        log_info("agent.run", "code blocks extracted", block_count=len(blocks))
+        callbacks.on_status(f"code extracted, blocks={len(blocks)}")
+        if not blocks:
             # No code → treat as feedback
             history.add(Role.FEEDBACK, "No code generated.")
             log_warn("agent.run", "LLM returned no executable code")
             callbacks.on_status("LLM returned no executable code")
+            # Audit log
+            audit_log(
+                "agent_error",
+                {
+                    "error_type": "no_code_generated",
+                    "text_preview": text[:200],
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                    "attempts": attempts,
+                    "block_count": 0,
+                    "error": "No code generated",
+                },
+                correlation_id=get_correlation_id(),
+            )
             return AgentResult(
                 ok=False,
                 attempts=attempts,
@@ -285,51 +341,95 @@ def run(
                 rollback_count=0,
             )
 
-        # Execute (with rollback) via callback or directly
-        if use_callbacks:
-            # Delegate execution to UI thread
-            log_info("agent.run", "delegating execution to UI thread", attempt=attempts)
-            callbacks.on_status("dispatching code to FreeCAD main thread")
-            exec_result_dict = callbacks.on_exec_needed(code, attempts)
-            exec_result = ExecResult(
-                ok=exec_result_dict.get("ok", False),
-                new_objects=exec_result_dict.get("new_objects", []),
-                error=exec_result_dict.get("error"),
-                rollback_count=exec_result_dict.get("rollback_count", 0),
-            )
-        else:
-            # Direct execution
-            log_info(
-                "agent.run",
-                "executing directly in current thread",
-                attempt=attempts,
-            )
-            exec_result = _execute_with_rollback(code, doc)
+        # Execute each block sequentially
+        all_new_objects: list[str] = []
+        block_rollback_count = 0
+        overall_ok = True
+        block_error = None
+        block_category = None
+        block_feedback = None
 
-        total_rollback_count += exec_result.rollback_count
+        for idx, block in enumerate(blocks, start=1):
+            log_info("agent.run", "executing block", block_idx=idx, total_blocks=len(blocks), preview=block[:200])
+            callbacks.on_status(f"executing block {idx}/{len(blocks)}")
 
-        if exec_result.ok:
-            # Success – add assistant response to history
+            if use_callbacks:
+                # Delegate execution to UI thread
+                log_info("agent.run", "delegating block execution to UI thread", attempt=attempts)
+                exec_result_dict = callbacks.on_exec_needed(block, attempts)
+                exec_result = ExecResult(
+                    ok=exec_result_dict.get("ok", False),
+                    new_objects=exec_result_dict.get("new_objects", []),
+                    error=exec_result_dict.get("error"),
+                    rollback_count=exec_result_dict.get("rollback_count", 0),
+                )
+            else:
+                # Direct execution
+                exec_result = _execute_with_rollback(block, doc)
+
+            block_rollback_count += exec_result.rollback_count
+
+            if exec_result.ok:
+                # Block succeeded – accumulate new objects
+                all_new_objects.extend(exec_result.new_objects)
+                continue
+            else:
+                # Block failed – stop execution of subsequent blocks
+                overall_ok = False
+                block_error = exec_result.error
+                if block_error is None:
+                    block_error = "Unknown error"
+                block_category = _categorize_error(block_error)
+                block_feedback = _make_feedback(block_error, block_category)
+                log_warn(
+                    "agent.run",
+                    "block execution failed",
+                    block_idx=idx,
+                    error=block_error,
+                    category=block_category,
+                )
+                callbacks.on_status(f"block {idx} failed: {block_feedback}")
+                break
+
+        total_rollback_count += block_rollback_count
+
+        if overall_ok:
+            # All blocks succeeded – add assistant response to history
             history.add(Role.ASSISTANT, llm_text)
             log_info(
                 "agent.run",
                 "attempt succeeded",
                 attempt=attempts,
-                new_objects=exec_result.new_objects,
+                new_objects=all_new_objects,
+                block_count=len(blocks),
             )
             callbacks.on_status("execution succeeded")
+            # Audit log
+            audit_log(
+                "agent_success",
+                {
+                    "text_preview": text[:200],
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                    "attempts": attempts,
+                    "new_object_names": all_new_objects,
+                    "block_count": len(blocks),
+                    "rollback_count": total_rollback_count,
+                },
+                correlation_id=get_correlation_id(),
+            )
             return AgentResult(
                 ok=True,
                 attempts=attempts,
-                new_objects=exec_result.new_objects,
+                new_objects=all_new_objects,
                 rollback_count=total_rollback_count,
             )
         else:
-            last_error = exec_result.error
-            if last_error is None:
-                last_error = "Unknown error"
-            category = _categorize_error(last_error)
-            feedback = _make_feedback(last_error, category)
+            # At least one block failed
+            last_error = block_error
+            category = block_category
+            feedback = block_feedback
             history.add(Role.FEEDBACK, feedback)
             log_warn(
                 "agent.run",
@@ -341,6 +441,24 @@ def run(
             callbacks.on_status(f"execution failed: {feedback}")
             # Retry loop continues unless error is non-retriable
             if category == "unsupported_api" or (category == "blocked_token" and not _is_blocked_import(last_error)):
+                # Audit log
+                audit_log(
+                    "agent_error",
+                    {
+                        "error_type": "execution_error",
+                        "error_category": category,
+                        "text_preview": text[:200],
+                        "provider": getattr(adapter, "provider", type(adapter).__name__),
+                        "model": getattr(adapter, "model", "unknown"),
+                        "document_name": getattr(doc, "Name", None),
+                        "attempts": attempts,
+                        "block_count": len(blocks),
+                        "error": last_error,
+                        "feedback": feedback,
+                        "rollback_count": total_rollback_count,
+                    },
+                    correlation_id=get_correlation_id(),
+                )
                 return AgentResult(
                     ok=False,
                     attempts=attempts,
@@ -352,6 +470,22 @@ def run(
 
     # All retries exhausted
     error_msg = f"Max retries exceeded: {last_error}" if last_error else "Max retries exceeded"
+    # Audit log
+    audit_log(
+        "agent_error",
+        {
+            "error_type": "max_retries_exhausted",
+            "text_preview": text[:200],
+            "provider": getattr(adapter, "provider", type(adapter).__name__),
+            "model": getattr(adapter, "model", "unknown"),
+            "document_name": getattr(doc, "Name", None),
+            "attempts": attempts,
+            "error": error_msg,
+            "last_error": last_error,
+            "rollback_count": total_rollback_count,
+        },
+        correlation_id=get_correlation_id(),
+    )
     return AgentResult(
         ok=False,
         attempts=attempts,

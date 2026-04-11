@@ -4,6 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from neurocad.config.defaults import (
+    DEFAULT_AUDIT_LOG_ENABLED,
+    AUDIT_LOG_MAX_PREVIEW_CHARS,
+    AUDIT_LOG_MAX_OBJECT_NAMES,
+)
+
 try:
     import keyring
 except ImportError:
@@ -52,6 +58,7 @@ def load() -> dict[str, Any]:
             "model": DEFAULT_MODEL,
             "timeout": DEFAULT_TIMEOUT,
             "max_created_objects": DEFAULT_MAX_CREATED_OBJECTS,
+            "audit_log_enabled": DEFAULT_AUDIT_LOG_ENABLED,
         }
 
     with open(config_file, encoding="utf-8") as f:
@@ -61,6 +68,7 @@ def load() -> dict[str, Any]:
     data.setdefault("model", DEFAULT_MODEL)
     data.setdefault("timeout", DEFAULT_TIMEOUT)
     data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
+    data.setdefault("audit_log_enabled", DEFAULT_AUDIT_LOG_ENABLED)
     return data
 
 

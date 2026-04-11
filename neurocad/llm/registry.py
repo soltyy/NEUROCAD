@@ -25,14 +25,22 @@ _ADAPTER_VALID_KEYS = {
 }
 
 
-def _resolve_api_key(provider: str) -> str:
-    """Retrieve API key from environment or keyring.
+def _resolve_api_key(provider: str, session_key: str | None = None) -> str:
+    """Retrieve API key with precedence: session key → environment variable → keyring.
 
-    Precedence:
-    1. Environment variable NEUROCAD_API_KEY_{PROVIDER_UPPERCASE}
-    2. Keyring entry "neurocad", provider
-    3. Raise ValueError with clear instructions.
+    Args:
+        provider: LLM provider name (e.g., "openai").
+        session_key: Optional temporary key supplied by the user (e.g., via "Use once").
+            If present and non‑empty, it takes precedence and no fallback is attempted.
+
+    Returns:
+        API key as a string.
+
+    Raises:
+        ValueError: No key could be found.
     """
+    if session_key and session_key.strip():
+        return session_key.strip()
     env_var = f"NEUROCAD_API_KEY_{provider.upper()}"
     key = os.getenv(env_var)
     if key:
@@ -52,13 +60,16 @@ def _resolve_api_key(provider: str) -> str:
     )
 
 
-def load_adapter(config: dict[str, Any]) -> LLMAdapter:
-    """Load adapter based on config, resolving API key from environment/keyring."""
+def load_adapter(config: dict[str, Any], session_key: str | None = None) -> LLMAdapter:
+    """Load adapter based on config, resolving API key with precedence.
+
+    Precedence: session_key (if supplied) → environment variable → keyring.
+    """
     provider = config.get("provider", "openai")
     adapter_cls = ADAPTERS.get(provider)
     if adapter_cls is None:
         raise ValueError(f"Unknown provider: {provider}")
-    api_key = _resolve_api_key(provider)
+    api_key = _resolve_api_key(provider, session_key)
     valid_keys = _ADAPTER_VALID_KEYS.get(provider, set())
     adapter_config = {k: v for k, v in config.items() if k in valid_keys}
     adapter_config["api_key"] = api_key

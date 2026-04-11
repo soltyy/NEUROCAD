@@ -658,5 +658,103 @@ def test_runtime_visible_naming(qapp):
     assert dialog.windowTitle() == "NeuroCAD Settings"
 
 
+def test_panel_diagnostics_missing_key(qapp):
+    """Status label shows missing key error when load_adapter raises ValueError."""
+    from unittest.mock import patch, MagicMock
+    from neurocad.ui.panel import CopilotPanel
+    from neurocad.core.active_document import get_active_document
+
+    with patch("neurocad.ui.panel.load_adapter") as mock_load:
+        mock_load.side_effect = ValueError("No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI environment variable or store it in the system keyring.")
+        panel = CopilotPanel()
+        # Force re-initialization
+        panel._init_adapter()
+        assert panel._adapter is None
+        assert panel._adapter_error is not None
+        assert isinstance(panel._adapter_error, ValueError)
+        # Status label should reflect error
+        assert panel._status_label.text().startswith("Error:")
+        # Should contain "Missing API key"
+        assert "Missing API key" in panel._status_label.text()
+        # Feedback message on submit should be specific
+        panel._add_message = MagicMock()
+        # Mock active document
+        mock_doc = MagicMock()
+        mock_doc.Name = "TestDoc"
+        with patch("neurocad.ui.panel.get_active_document", return_value=mock_doc):
+            # Set input text
+            panel._input.setPlainText("test request")
+            panel._on_submit()
+            panel._add_message.assert_called_once()
+            call_args = panel._add_message.call_args[0]
+            assert call_args[0] == "feedback"
+            assert "Missing API key" in call_args[1]
+
+
+def test_panel_diagnostics_unknown_provider(qapp):
+    """Status label shows unknown provider error."""
+    from unittest.mock import patch
+    from neurocad.ui.panel import CopilotPanel
+
+    with patch("neurocad.ui.panel.load_adapter") as mock_load:
+        mock_load.side_effect = ValueError("Unknown provider: invalid")
+        panel = CopilotPanel()
+        panel._init_adapter()
+        assert panel._adapter is None
+        assert panel._adapter_error is not None
+        assert "Unknown provider" in str(panel._adapter_error)
+        assert panel._status_label.text().startswith("Error:")
+        assert "Unknown provider" in panel._status_label.text()
+
+
+def test_panel_diagnostics_keyring_unavailable(qapp):
+    """Status label shows secure storage unavailable."""
+    from unittest.mock import patch
+    from neurocad.ui.panel import CopilotPanel
+
+    with patch("neurocad.ui.panel.load_adapter") as mock_load:
+        mock_load.side_effect = ValueError("No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI environment variable or install the `keyring` package in the FreeCAD Python environment to store it.")
+        panel = CopilotPanel()
+        panel._init_adapter()
+        assert panel._adapter is None
+        assert panel._adapter_error is not None
+        assert "keyring" in str(panel._adapter_error).lower()
+        assert panel._status_label.text().startswith("Error:")
+        assert "Secure storage unavailable" in panel._status_label.text()
+
+
+def test_panel_diagnostics_adapter_init_failure(qapp):
+    """Status label shows adapter initialization failure (non‑ValueError)."""
+    from unittest.mock import patch
+    from neurocad.ui.panel import CopilotPanel
+
+    with patch("neurocad.ui.panel.load_adapter") as mock_load:
+        mock_load.side_effect = RuntimeError("Connection refused")
+        panel = CopilotPanel()
+        panel._init_adapter()
+        assert panel._adapter is None
+        assert panel._adapter_error is not None
+        assert isinstance(panel._adapter_error, RuntimeError)
+        assert panel._status_label.text().startswith("Error:")
+        assert "Adapter failed" in panel._status_label.text()
+
+
+def test_panel_diagnostics_no_error_ready_status(qapp):
+    """Status label shows Ready when adapter loads successfully."""
+    from unittest.mock import patch
+    from neurocad.ui.panel import CopilotPanel
+    from neurocad.llm.base import LLMAdapter
+
+    mock_adapter = MagicMock(spec=LLMAdapter)
+    with patch("neurocad.ui.panel.load_adapter", return_value=mock_adapter):
+        panel = CopilotPanel()
+        panel._init_adapter()
+        assert panel._adapter is mock_adapter
+        assert panel._adapter_error is None
+        assert panel._status_label.text() == "Ready"
+        # Style should be default
+        assert "color: #666" in panel._status_label.styleSheet()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -136,10 +136,89 @@ def test_run_no_code_generated():
     history = History()
 
     with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
-         patch("neurocad.core.agent.extract_code", return_value=""):
+         patch("neurocad.core.agent.extract_code_blocks", return_value=[]):
             result = run("prompt", mock_doc, mock_adapter, history)
             assert result.ok is False
             assert "No code generated" in result.error
+
+
+def test_run_multi_block_sequential():
+    """Multiple code blocks are executed sequentially."""
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = """```python
+Part.makeBox(10,10,10)
+```
+```python
+Part.makeCylinder(5,20)
+```"""
+    history = History()
+
+    with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        # First call succeeds, second call succeeds
+        mock_exec.side_effect = [
+            ExecResult(ok=True, new_objects=["Box"]),
+            ExecResult(ok=True, new_objects=["Cylinder"]),
+        ]
+        result = run("make shapes", mock_doc, mock_adapter, history)
+        assert result.ok is True
+        assert result.attempts == 1
+        assert result.new_objects == ["Box", "Cylinder"]
+        assert mock_exec.call_count == 2
+        # Verify call order
+        call_args = [call[0][0] for call in mock_exec.call_args_list]
+        assert "Part.makeBox" in call_args[0]
+        assert "Part.makeCylinder" in call_args[1]
+
+
+def test_run_multi_block_stop_on_failure():
+    """Execution stops at first failing block (unsupported API error)."""
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = """```python
+Part.makeBox(10,10,10)
+```
+```python
+Part.makeCylinder(5,20)
+```"""
+    history = History()
+
+    with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        # First call fails with unsupported API error (non‑retriable)
+        mock_exec.side_effect = [
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeBox'"),
+        ]
+        result = run("make shapes", mock_doc, mock_adapter, history)
+        assert result.ok is False
+        assert result.attempts == 1
+        assert mock_exec.call_count == 1
+        # Second block should not have been executed
+        # No retries because error category is unsupported_api
+
+
+def test_run_sandbox_policy_imports_stripped():
+    """Safe imports are stripped from code blocks before execution."""
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = """```python
+import FreeCAD
+import Part
+box = Part.makeBox(10,10,10)
+```"""
+    history = History()
+
+    with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        mock_exec.return_value = ExecResult(ok=True, new_objects=["Box"])
+        result = run("make box", mock_doc, mock_adapter, history)
+        assert result.ok is True
+        # Ensure the executed code does not contain safe imports
+        executed_code = mock_exec.call_args[0][0]
+        assert "import FreeCAD" not in executed_code
+        assert "import Part" not in executed_code
+        assert "Part.makeBox" in executed_code
 
 
 def test_run_llm_error_fails_fast():
