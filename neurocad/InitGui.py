@@ -16,15 +16,15 @@ FreeCADGui.addIconPath(os.path.join(_wb_dir, "resources", "icons"))
 class NeuroCadWorkbench(FreeCADGui.Workbench):
     """NeuroCad workbench."""
 
-    MenuText = "NeuroCad"
+    MenuText = "NeuroCAD"
     ToolTip = "AI‑powered CAD assistant"
     Icon = "neurocad.svg"
 
     def Initialize(self):
         """Called when workbench is loaded. Do NOT create dock widgets here."""
         # Create toolbar and menu
-        self.appendToolbar("NeuroCad", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
-        self.appendMenu("NeuroCad", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
+        self.appendToolbar("NeuroCAD", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
+        self.appendMenu("NeuroCAD", ["NeuroCad_OpenChat", "NeuroCad_Settings"])
 
     def Activated(self):
         """Called when the workbench is activated."""
@@ -53,7 +53,7 @@ class OpenChatCommand:
         return {
             "Pixmap": "neurocad.svg",  # placeholder
             "MenuText": "Open Chat",
-            "ToolTip": "Open NeuroCad chat panel",
+            "ToolTip": "Open NeuroCAD chat panel",
         }
 
     def Activated(self):

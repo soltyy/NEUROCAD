@@ -469,9 +469,11 @@ def test_queue_scroll_to_bottom_schedules_timer(qapp):
 
 
 def test_adaptive_input_height_cap_respects_panel_height(qapp):
-    """AdaptivePlainTextEdit maximum height respects container limit (half panel height minus fixed overhead)."""
-    from neurocad.ui.panel import AdaptivePlainTextEdit, CopilotPanel
+    """AdaptivePlainTextEdit maximum height respects container limit
+    (half panel height minus fixed overhead)."""
     from unittest.mock import patch
+
+    from neurocad.ui.panel import AdaptivePlainTextEdit, CopilotPanel
 
     dock = CopilotPanel()
     # Set panel height
@@ -615,6 +617,45 @@ def test_user_bubble_no_logo(qapp):
         mock_load.assert_not_called()
         # Should not have avatar label (only assistant role has avatar)
         assert not hasattr(bubble, '_avatar')
+
+
+def test_runtime_visible_naming(qapp):
+    """Runtime‑visible UI strings must use canonical 'NeuroCAD' capitalization."""
+    import pathlib
+
+    # 1. Workbench display name
+    init_gui_path = pathlib.Path(__file__).parent.parent / "neurocad" / "InitGui.py"
+    content = init_gui_path.read_text()
+    # Check MenuText assignment
+    assert 'MenuText = "NeuroCAD"' in content, "MenuText should be 'NeuroCAD'"
+    # Check toolbar/menu label
+    assert 'appendToolbar("NeuroCAD"' in content, "Toolbar label should be 'NeuroCAD'"
+    assert 'appendMenu("NeuroCAD"' in content, "Menu label should be 'NeuroCAD'"
+    # Check command tooltip
+    assert '"ToolTip": "Open NeuroCAD chat panel"' in content, \
+        "Command tooltip should use 'NeuroCAD'"
+
+    # 2. Panel window title and title bar label
+    panel_path = pathlib.Path(__file__).parent.parent / "neurocad" / "ui" / "panel.py"
+    panel_content = panel_path.read_text()
+    assert 'setWindowTitle("NeuroCAD")' in panel_content, \
+        "Panel window title should be 'NeuroCAD'"
+    assert 'addWidget(QtWidgets.QLabel("NeuroCAD"))' in panel_content, \
+        "Title bar label should be 'NeuroCAD'"
+
+    # 3. Settings dialog window title
+    settings_path = pathlib.Path(__file__).parent.parent / "neurocad" / "ui" / "settings.py"
+    settings_content = settings_path.read_text()
+    assert 'setWindowTitle("NeuroCAD Settings")' in settings_content, \
+        "Settings dialog title should be 'NeuroCAD Settings'"
+
+    # 4. Runtime instances (optional, but ensure no regression in constructed objects)
+    from neurocad.ui.panel import CopilotPanel
+    from neurocad.ui.settings import SettingsDialog
+    panel = CopilotPanel(parent=None)
+    assert panel.windowTitle() == "NeuroCAD"
+    dialog = SettingsDialog(parent=None)
+    assert dialog.windowTitle() == "NeuroCAD Settings"
 
 
 if __name__ == "__main__":

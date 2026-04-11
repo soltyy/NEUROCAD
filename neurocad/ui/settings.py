@@ -12,7 +12,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("NeuroCad Settings")
+        self.setWindowTitle("NeuroCAD Settings")
         self._config = load_config()
         self._adapter = None  # adapter created via Use once
         self._build_ui()

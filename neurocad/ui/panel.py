@@ -102,7 +102,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("NeuroCad")
+        self.setWindowTitle("NeuroCAD")
         self._worker = None
         self._history = History()
         self._adapter = None
@@ -235,7 +235,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         title_widget = QtWidgets.QWidget()
         title_layout = QtWidgets.QHBoxLayout(title_widget)
         title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.addWidget(QtWidgets.QLabel("NeuroCad"))
+        title_layout.addWidget(QtWidgets.QLabel("NeuroCAD"))
         title_layout.addStretch()
         # Status text label (replaces bottom status label)
         self._status_label = QtWidgets.QLabel("Ready")
