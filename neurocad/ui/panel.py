@@ -3,7 +3,6 @@
 Contains get_panel_dock() lazy singleton and CopilotPanel QDockWidget.
 """
 
-
 from ..config.config import load as load_config
 from ..core.active_document import get_active_document
 from ..core.debug import log_error, log_info, log_warn
@@ -84,6 +83,7 @@ def get_panel_dock(create: bool = True):
     # Need FreeCAD's main window
     try:
         import FreeCADGui  # type: ignore
+
         mw = FreeCADGui.getMainWindow()
     except ImportError:
         mw = None
@@ -149,6 +149,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
             self._config["timeout"] = float(adapter.timeout)
         if adapter is not None:
             from ..core.debug import log_info
+
             log_info(
                 "panel.set_adapter",
                 "adapter updated",
@@ -156,6 +157,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
             )
         else:
             from ..core.debug import log_warn
+
             log_warn("panel.set_adapter", "adapter cleared")
 
     def _build_ui(self):
@@ -243,7 +245,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         title_layout.addWidget(self._status_dot)
         self.setTitleBarWidget(title_widget)
 
-
         # Assemble
         layout.addWidget(scroll)
 
@@ -259,7 +260,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         input_box_layout = QtWidgets.QVBoxLayout(self._input_box)
         input_box_layout.setContentsMargins(12, 12, 12, 12)
         input_box_layout.setSpacing(6)
-
 
         # Input row (just line edit)
         input_row = QtWidgets.QHBoxLayout()
@@ -281,15 +281,15 @@ class CopilotPanel(QtWidgets.QDockWidget):
         toolbar_row.addWidget(self._send_btn)
         input_box_layout.addLayout(toolbar_row)
         # Stretch factors: input row expands, divider and toolbar stay fixed
-        input_box_layout.setStretch(0, 1)   # input row
-        input_box_layout.setStretch(1, 0)   # divider
-        input_box_layout.setStretch(2, 0)   # toolbar row
+        input_box_layout.setStretch(0, 1)  # input row
+        input_box_layout.setStretch(1, 0)  # divider
+        input_box_layout.setStretch(2, 0)  # toolbar row
 
         layout.addWidget(self._input_box)
 
         # Give scroll area all extra vertical space
-        layout.setStretch(0, 1)   # scroll area
-        layout.setStretch(1, 0)   # input container
+        layout.setStretch(0, 1)  # scroll area
+        layout.setStretch(1, 0)  # input container
 
         # Set container reference for adaptive height
         self._input._container_ref = self._input_box
@@ -313,6 +313,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._snapshot_btn.clicked.connect(self._on_snapshot_requested)
         self._export_btn.clicked.connect(self._on_export_requested)
         self._input.submitted.connect(self._on_submit)
+
     def _add_message(self, role: str, text: str):
         """Append a message bubble to the chat area."""
         if role == "user":
@@ -453,6 +454,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
     def _on_exec_needed(self, code: str, attempt: int) -> None:
         """Execute code in the main thread and hand the result back to the worker."""
         from ..core.agent import _execute_with_rollback
+
         log_info("panel.exec", "execution requested", attempt=attempt, code_preview=code[:200])
         doc = get_active_document()
         result_data = {"ok": False, "new_objects": [], "error": "No active document"}
@@ -612,7 +614,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         max_h = max(panel_height // 2, self._input_box.minimumHeight())
         self._input_box.setMaximumHeight(max_h)
         # Trigger input height recomputation
-        if hasattr(self._input, '_adjust_height'):
+        if hasattr(self._input, "_adjust_height"):
             self._input._adjust_height()
 
     def resizeEvent(self, event):

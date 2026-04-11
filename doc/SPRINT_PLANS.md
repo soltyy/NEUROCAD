@@ -433,7 +433,7 @@ Sprint 3 принимается как завершённый этап **с по
 
 # Sprint 5.3 — Naming Consistency
 **Нед. 13 · Python 3.11 · FreeCAD 1.1**
-**Статус:** planned
+**Статус:** completed
 
 **Предусловие:** Sprint 5.2 остаётся corrective baseline. Sprint 5.3 не меняет capability scope, threading model или execution architecture; он закрывает точечную задачу консистентности naming contract.
 
@@ -446,7 +446,7 @@ Sprint 3 принимается как завершённый этап **с по
 1. NC-DEV-CORE-015A    / Developer / Rename transaction name from NeuroCad to NeuroCAD      / completed
 2. NC-DEV-UI-008A      / Developer / Stabilize input box height and bottom toolbar layout    / completed
 3. NC-DEV-CORE-016A    / Developer / Fix blocked-import failures on supported CAD prompts    / completed
-4. NC-PM-REVIEW-007A   / PM        / Review Sprint 5.3 naming, layout, and prompt consistency / planned
+4. NC-PM-REVIEW-007A   / PM        / Review Sprint 5.3 naming, layout, and prompt consistency / completed
 ```
 
 ---
@@ -464,7 +464,7 @@ Sprint 3 принимается как завершённый этап **с по
 - `NC-DEV-CORE-015A` — completed.
 - `NC-DEV-UI-008A` — completed.
 - `NC-DEV-CORE-016A` — completed.
-- `NC-PM-REVIEW-007A` — planned.
+- `NC-PM-REVIEW-007A` — completed.
 
 ---
 

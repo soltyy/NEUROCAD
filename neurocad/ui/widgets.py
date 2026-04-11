@@ -1,10 +1,10 @@
 """Custom Qt widgets for NeuroCad UI."""
 
-
 from .compat import Qt, QtCore, QtGui, QtWidgets
 
 try:
     from PySide6 import QtSvg
+
     HAS_SVG = True
 except ImportError:
     HAS_SVG = False
@@ -12,6 +12,7 @@ except ImportError:
 from pathlib import Path
 
 FOLD_THRESHOLD_CHARS = 300
+
 
 class MessageBubble(QtWidgets.QFrame):
     """A chat bubble displaying a message with role styling."""
@@ -111,13 +112,13 @@ class MessageBubble(QtWidgets.QFrame):
                 # Determine feedback color based on text content
                 text_lower = text.lower()
                 if any(word in text_lower for word in ("success", "exported")):
-                    border_color = "#22c55e"   # green
+                    border_color = "#22c55e"  # green
                 elif any(word in text_lower for word in ("unsupported", "timed out")):
-                    border_color = "#f59e0b"   # yellow
+                    border_color = "#f59e0b"  # yellow
                 elif any(word in text_lower for word in ("failed", "error")):
-                    border_color = "#ef4444"   # red
+                    border_color = "#ef4444"  # red
                 else:
-                    border_color = "#94a3b8"   # gray
+                    border_color = "#94a3b8"  # gray
                 # Transparent background, left border only
                 self.setStyleSheet(f"""
                     MessageBubble {{
