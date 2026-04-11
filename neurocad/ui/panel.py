@@ -282,31 +282,30 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._snapshot_btn.clicked.connect(self._on_snapshot_requested)
         self._export_btn.clicked.connect(self._on_export_requested)
         self._input.submitted.connect(self._on_submit)
-def _add_message(self, role: str, text: str):
-    """Append a message bubble to the chat area."""
-    if role == "user":
-        # Create row-container: QWidget with horizontal layout
-        container = QtWidgets.QWidget()
-        row_layout = QtWidgets.QHBoxLayout(container)
-        row_layout.addStretch()
-        bubble = MessageBubble(role, text)
-        row_layout.addWidget(bubble)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        # Set maximum width relative to scroll viewport
-        self._update_user_bubble_width(bubble)
-        self._scroll_layout.addWidget(container)
-    else:
-        bubble = MessageBubble(role, text)
-        self._scroll_layout.addWidget(bubble, alignment=Qt.AlignLeft)  # type: ignore[attr-defined]
-    # Scroll to bottom
-    self._queue_scroll_to_bottom()
+    def _add_message(self, role: str, text: str):
+        """Append a message bubble to the chat area."""
+        if role == "user":
+            # Create row-container: QWidget with horizontal layout
+            container = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(container)
+            row_layout.addStretch()
+            bubble = MessageBubble(role, text)
+            row_layout.addWidget(bubble)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            # Set maximum width relative to scroll viewport
+            self._update_user_bubble_width(bubble)
+            self._scroll_layout.addWidget(container)
+        else:
+            bubble = MessageBubble(role, text)
+            self._scroll_layout.addWidget(bubble, alignment=Qt.AlignLeft)  # type: ignore[attr-defined]
+        # Scroll to bottom
+        self._queue_scroll_to_bottom()
 
-def _update_user_bubble_width(self, bubble):
-    """Set maximum width of user bubble based on scroll viewport width."""
-    viewport_width = self._scroll_area.viewport().width()
-    max_width = int(viewport_width * 0.8)  # 80% of viewport
-    bubble.setMaximumWidth(max_width)
-
+    def _update_user_bubble_width(self, bubble):
+        """Set maximum width of user bubble based on scroll viewport width."""
+        viewport_width = self._scroll_area.viewport().width()
+        max_width = int(viewport_width * 0.8)  # 80% of viewport
+        bubble.setMaximumWidth(max_width)
 
     def _queue_scroll_to_bottom(self):
         """Schedule a scroll to bottom if not already pending."""

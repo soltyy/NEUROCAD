@@ -105,3 +105,22 @@ def test_save_api_key_without_keyring_raises_runtime_error():
             assert "keyring is not installed" in str(exc)
         else:
             raise AssertionError("save_api_key() should raise when keyring is unavailable")
+
+
+def test_load_includes_max_created_objects():
+    """load() should include max_created_objects with default 1000."""
+    with patch.object(Path, "exists", return_value=False):
+        config = load()
+    assert config["max_created_objects"] == 1000
+
+
+def test_save_includes_max_created_objects():
+    """save() should write max_created_objects."""
+    config = {"provider": "openai", "model": "gpt-4", "timeout": 120.0, "max_created_objects": 500}
+    mock_file = mock_open()
+    with patch.object(Path, "mkdir"), patch("builtins.open", mock_file):
+        save(config)
+    written = "".join(call.args[0] for call in mock_file().write.call_args_list)
+    parsed = json.loads(written)
+    assert parsed["max_created_objects"] == 500
+    assert parsed["provider"] == "openai"

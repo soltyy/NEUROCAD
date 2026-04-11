@@ -390,7 +390,7 @@ Sprint 3 принимается как завершённый этап **с по
 
 # Sprint 5.2 — UI Correctives + Configurable Limits
 **Нед. 12 · Python 3.11 · FreeCAD 1.1**
-**Статус:** planned
+**Статус:** completed
 
 **Предусловие:** Sprint 5.1 используется как baseline визуального refresh. Sprint 5.2 не меняет capability scope, worker/agent path или threading model; он закрывает точечные UI defects и убирает жёсткий лимит `MAX_OBJECTS = 5` в executor через config-driven contract.
 
@@ -422,12 +422,12 @@ Sprint 3 принимается как завершённый этап **с по
 | **NC-PM-REVIEW-006A** | PM | 6 | Проверить Sprint 5.2 corrective scope после Sprint 5.1 baseline | Закрытый checklist | Все corrective subtasks закрыты без architectural drift; regression tests покрывают сценарии; automated gate по изменённым файлам clean | (1) `NC-DEV-UI-007A` закрыт: user prompt отображается полностью, переносится строками и остаётся справа (2) `NC-DEV-UI-007B` закрыт: нижний `Ready` отсутствует, status zone находится в title bar, indicator выровнен соосно scroll gutter (3) `NC-DEV-UI-007C` закрыт: auto-scroll доводит viewport до последних `Request sent`, `Execution failed` и `Failed after 1 attempts ...` (4) `NC-DEV-UI-007D` закрыт: assistant bubble использует логотип `neurocad.svg` слева (5) `NC-DEV-CORE-014A` закрыт: hardcoded object limit `5` удалён, configurable limit default=`1000` (6) submit/data path не менялся (7) worker/agent/threading path не изменён (8) pytest/ruff/mypy по изменённым файлам clean |
 
 **Факт статуса на 2026-04-11:**
-- `NC-DEV-UI-007A` — planned.
-- `NC-DEV-UI-007B` — planned.
-- `NC-DEV-UI-007C` — planned.
-- `NC-DEV-UI-007D` — planned.
-- `NC-DEV-CORE-014A` — planned.
-- `NC-PM-REVIEW-006A` — planned.
+- `NC-DEV-UI-007A` — completed.
+- `NC-DEV-UI-007B` — completed.
+- `NC-DEV-UI-007C` — completed.
+- `NC-DEV-UI-007D` — completed.
+- `NC-DEV-CORE-014A` — completed.
+- `NC-PM-REVIEW-006A` — completed.
 
 ---
 
@@ -444,7 +444,9 @@ Sprint 3 принимается как завершённый этап **с по
 **Rolling Plan (старт)**
 ```
 1. NC-DEV-CORE-015A    / Developer / Rename transaction name from NeuroCad to NeuroCAD      / planned
-2. NC-PM-REVIEW-007A   / PM        / Review transaction-name consistency                     / planned
+2. NC-DEV-UI-008A      / Developer / Stabilize input box height and bottom toolbar layout    / planned
+3. NC-DEV-CORE-016A    / Developer / Fix blocked-import failures on supported CAD prompts    / planned
+4. NC-PM-REVIEW-007A   / PM        / Review Sprint 5.3 naming, layout, and prompt consistency / planned
 ```
 
 ---
@@ -454,10 +456,14 @@ Sprint 3 принимается как завершённый этап **с по
 | Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
 |---|---|---|---|---|---|---|
 | **NC-DEV-CORE-015A** | Developer | 1 | Заменить transaction name `"NeuroCad"` везде на `"NeuroCAD"` | `core/agent.py`, затронутые тесты, `doc/SPRINT_PLANS.md` при необходимости | `openTransaction()` использует `"NeuroCAD"`; тесты и документация не содержат старого transaction-name contract; изменение ограничено naming consistency и не меняет execution semantics | `TASK CODE: NC-DEV-CORE-015A` / Привести transaction name к единому виду `NeuroCAD` во всём проекте. Заменить все места, где transaction name используется как `"NeuroCad"`, на `"NeuroCAD"`. Обновить соответствующие тесты и sprint-документацию, если они закрепляют старое значение. Не менять worker, agent flow, rollback semantics, threading model, validator logic или capability scope; это только naming consistency fix. |
-| **NC-PM-REVIEW-007A** | PM | 2 | Проверить консистентность transaction name после Sprint 5.2 baseline | Закрытый checklist | Во всех runtime и test contracts transaction name единообразно `NeuroCAD`; старое значение `NeuroCad` не остаётся как активный contract в коде/тестах/плане; automated gate по изменённым файлам clean | (1) `openTransaction()` использует `NeuroCAD` (2) tests закрепляют `NeuroCAD`, а не `NeuroCad` (3) sprint docs не описывают старый transaction contract как текущий (4) execution semantics не изменены (5) pytest/ruff/mypy по изменённым файлам clean |
+| **NC-DEV-UI-008A** | Developer | 2 | Привести input box к устойчивому vertical layout contract: минимальная высота контейнера, adaptive input growth и toolbar pinned to bottom | `ui/panel.py`, затронутые тесты | Красный input-container занимает минимальную высоту, но не меньше суммы внутренних элементов и отступов; синий input-area растёт по высоте под вводимый текст; рост input-area не приводит к тому, что весь красный контейнер становится выше половины высоты панели `NeuroCad`; после достижения лимита дальнейший рост идёт через внутренний скролл input widget; зелёный toolbar block всегда остаётся внизу красного контейнера | `TASK CODE: NC-DEV-UI-008A` / Исправить vertical layout contract нижнего input container в панели NeuroCad. Красный контейнер должен иметь минимальную высоту по содержимому и не занимать лишнее вертикальное пространство, но не может быть ниже суммы внутренних элементов, отступов и divider. Синий input widget должен автоматически увеличивать высоту по мере ввода текста. Рост input widget допускается только до тех пор, пока общая высота красного контейнера не достигнет половины общей высоты панели NeuroCad; после этого input widget должен переходить на внутренний скролл без дальнейшего роста контейнера. Зелёный toolbar row с кнопками `Snapshot`, `Export`, `Send` должен всегда быть прижат к нижней границе красного контейнера и не смещаться вверх при изменении высоты input widget. Добавить регрессионные тесты на минимальную высоту контейнера, adaptive growth input area, cap `<= 50%` высоты панели и bottom-pinned toolbar. Не менять worker, agent, executor, submit/data path, threading semantics или capability scope. |
+| **NC-DEV-CORE-016A** | Developer | 2 | Устранить supported-case fail, когда LLM генерирует `import math`, а sandbox его блокирует | `config/defaults.py`, `core/prompt.py`, `core/agent.py`, затронутые тесты | Supported prompt вроде `10 кубов вокруг этого куба` не завершается user-visible fail из-за `Blocked token 'import'`; sandbox policy не ослабляется; forbidden imports по-прежнему блокируются executor; добавлен regression test на supported-case recovery path | `TASK CODE: NC-DEV-CORE-016A` / Исправить self-contradiction между LLM output и sandbox contract для supported CAD prompts. Не ослаблять sandbox policy в `executor`: `import` должен оставаться запрещённым. Усилить generation contract в prompt для circular/radial patterns без `import math`, добавить targeted regeneration path: если первый сгенерированный код падает именно по blocked token `import` или `from`, выполнить один corrective regeneration pass с явной инструкцией сгенерировать эквивалентный код без import statements. Добавить regression tests на supported prompt вроде `10 кубов вокруг этого куба`, чтобы blocked-token import failure не был финальным user-visible результатом на первом supported-case path. Не менять worker/threading/main-thread execution semantics. |
+| **NC-PM-REVIEW-007A** | PM | 4 | Проверить консистентность Sprint 5.3 после Sprint 5.2 baseline | Закрытый checklist | Naming contract, input-layout contract и prompt/sandbox consistency закрыты без architectural drift; automated gate по изменённым файлам clean | (1) transaction name использует `NeuroCAD`, а не `NeuroCad` (2) input container не занимает лишнюю высоту и остаётся минимум по содержимому (3) input area растёт по тексту, но весь нижний контейнер не превышает `50%` высоты панели (4) toolbar row всегда pinned to bottom input container (5) supported prompt вроде `10 кубов вокруг этого куба` не деградирует в финальный blocked-import fail (6) sandbox policy на `import` не ослаблена (7) tests закрепляют новый layout contract, recovery contract и naming contract (8) execution semantics не изменены (9) pytest/ruff/mypy по изменённым файлам clean |
 
 **Факт статуса на 2026-04-11:**
 - `NC-DEV-CORE-015A` — planned.
+- `NC-DEV-UI-008A` — planned.
+- `NC-DEV-CORE-016A` — planned.
 - `NC-PM-REVIEW-007A` — planned.
 
 ---

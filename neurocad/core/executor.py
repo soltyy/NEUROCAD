@@ -4,6 +4,7 @@ import io
 import tokenize
 from dataclasses import dataclass
 
+from ..config.config import load as load_config
 from .debug import log_warn
 
 _BLOCKED_NAME_TOKENS = frozenset({
@@ -92,12 +93,13 @@ def execute(code: str, doc) -> ExecResult:
     new_objects = list(after - before)
 
     # Limit the number of new objects
-    MAX_OBJECTS = 5
-    if len(new_objects) > MAX_OBJECTS:
+    config = load_config()
+    max_objects = config.get("max_created_objects", 1000)
+    if len(new_objects) > max_objects:
         return ExecResult(
             ok=False,
             new_objects=[],
-            error=f"Created too many objects ({len(new_objects)} > {MAX_OBJECTS})",
+            error=f"Created too many objects ({len(new_objects)} > {max_objects})",
             rollback_count=0
         )
 

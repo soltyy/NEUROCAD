@@ -1,7 +1,7 @@
 """Custom Qt widgets for NeuroCad UI."""
 
 
-from .compat import Qt, QtWidgets, QtGui
+from .compat import Qt, QtCore, QtGui, QtWidgets
 
 try:
     from PySide6 import QtSvg
@@ -138,19 +138,24 @@ class MessageBubble(QtWidgets.QFrame):
         if not HAS_SVG:
             return None
         try:
-            svg_path = Path(__file__).parent.parent.parent / "resources/icons/neurocad.svg"
+            svg_path = Path(__file__).parent.parent / "resources/icons/neurocad.svg"
             if not svg_path.exists():
                 return None
             renderer = QtSvg.QSvgRenderer(str(svg_path))
+            if not renderer.isValid():
+                return None
             pixmap = QtGui.QPixmap(24, 24)
             pixmap.fill(Qt.transparent)
             painter = QtGui.QPainter(pixmap)
-            renderer.render(painter)
-            painter.end()
+            try:
+                renderer.render(painter)
+            finally:
+                painter.end()
             return pixmap
         except Exception:
             return None
 
+    @QtCore.Slot()
     def _toggle_expand(self) -> None:
         """Toggle expanded/collapsed state."""
         self._is_expanded = not self._is_expanded

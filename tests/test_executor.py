@@ -108,14 +108,17 @@ def test_execute_syntax_error():
 
 
 
+@patch("neurocad.core.executor.load_config")
 @patch("neurocad.core.executor._pre_check", return_value=None)
 @patch("neurocad.core.executor._build_namespace")
 @patch("neurocad.core.executor.exec")
-def test_execute_too_many_objects(mock_exec, mock_build, mock_pre_check):
-    """execute rejects creation of more than 5 objects."""
+def test_execute_too_many_objects(mock_exec, mock_build, mock_pre_check, mock_load_config):
+    """execute rejects creation of more than configured max objects."""
     mock_doc = MagicMock()
     mock_doc.Objects = []
     mock_build.return_value = {}
+    # Mock config with limit 5
+    mock_load_config.return_value = {"max_created_objects": 5}
 
     # Simulate that execution adds 6 new objects
     new_objects = [MagicMock(Name=f"Obj{i}") for i in range(6)]
@@ -127,6 +130,7 @@ def test_execute_too_many_objects(mock_exec, mock_build, mock_pre_check):
     assert result.ok is False
     assert "too many objects" in result.error.lower()
     assert "6" in result.error
+    assert "5" in result.error
 
 
 def test_executor_logs_unsupported_api():

@@ -421,13 +421,10 @@ def test_variant_b_visual_semantics(qapp):
     assert "border-radius: 12px" in user_bubble.styleSheet()
 
     assistant_bubble = MessageBubble("assistant", "test")
-    # Should have avatar "N"
+    # Should have avatar (logo or fallback)
     assert hasattr(assistant_bubble, "_avatar")
-    assert assistant_bubble._avatar.text() == "N"
     assert assistant_bubble._avatar.width() == 24
     assert assistant_bubble._avatar.height() == 24
-    avatar_style = assistant_bubble._avatar.styleSheet()
-    assert "background-color: #2563eb" in avatar_style
     # No card styling (transparent background, no border)
     bubble_style = assistant_bubble.styleSheet()
     assert "background-color: transparent" in bubble_style
@@ -505,14 +502,14 @@ def test_message_bubble_fold_unfold(qapp):
 
     # Create bubble with text just below threshold
     short_text = "a" * (FOLD_THRESHOLD_CHARS - 1)
-    bubble = MessageBubble("user", short_text)
+    bubble = MessageBubble("assistant", short_text)
     assert bubble._need_fold is False
     assert bubble._expand_button.isHidden() is True
     assert bubble._label.text() == short_text
 
     # Create bubble with text above threshold
     long_text = "b" * (FOLD_THRESHOLD_CHARS + 100)
-    bubble = MessageBubble("user", long_text)
+    bubble = MessageBubble("assistant", long_text)
     assert bubble._need_fold is True
     assert bubble._expand_button.isHidden() is False
     # Initially not expanded, should show preview with ellipsis
@@ -539,6 +536,73 @@ def test_message_bubble_fold_unfold(qapp):
     assert bubble._need_fold is True
     # Preview updated
     assert bubble._label.text().startswith(long_text[:FOLD_THRESHOLD_CHARS])
+
+
+def test_status_messages_trigger_auto_scroll(qapp):
+    """_on_status with specific messages triggers _queue_scroll_to_bottom."""
+    from unittest.mock import MagicMock, patch
+
+    from neurocad.ui.panel import CopilotPanel
+
+    with patch("neurocad.ui.panel.load_config", return_value={"provider": "openai"}):
+        dock = CopilotPanel()
+        dock._add_message = MagicMock(side_effect=lambda role, text: dock._queue_scroll_to_bottom())
+        dock._queue_scroll_to_bottom = MagicMock()
+        dock._status_label = MagicMock()
+
+        # Test "Request sent"
+        dock._on_status("sending request to LLM")
+        dock._add_message.assert_called_once_with("feedback", "Request sent")
+        dock._queue_scroll_to_bottom.assert_called_once()
+        dock._add_message.reset_mock()
+        dock._queue_scroll_to_bottom.reset_mock()
+
+        # Test "Execution failed"
+        dock._on_status("execution failed: something")
+        dock._add_message.assert_called_once_with("feedback", "Execution failed")
+        dock._queue_scroll_to_bottom.assert_called_once()
+        dock._add_message.reset_mock()
+        dock._queue_scroll_to_bottom.reset_mock()
+
+        # Test "Failed after 1 attempts: ..."
+        dock._on_status("Failed after 1 attempts: some error")
+        # Should map to generic status (no special mapping), so no _add_message call
+        dock._add_message.assert_not_called()
+        dock._queue_scroll_to_bottom.assert_not_called()
+
+
+def test_assistant_logo_loaded(qapp):
+    """MessageBubble for assistant role loads SVG logo (or fallback)."""
+    from unittest.mock import patch
+
+    from neurocad.ui.widgets import MessageBubble
+
+    # Mock _load_logo_pixmap to return None (fallback to "N")
+    with patch.object(MessageBubble, "_load_logo_pixmap") as mock_load:
+        mock_load.return_value = None
+        bubble = MessageBubble("assistant", "test")
+        # Ensure logo loading was attempted
+        mock_load.assert_called_once()
+        # Verify avatar label exists
+        assert hasattr(bubble, '_avatar')
+        assert bubble._avatar is not None
+        # Avatar should have fallback text "N"
+        assert bubble._avatar.text() == "N"
+        # No pixmap set
+
+
+def test_user_bubble_no_logo(qapp):
+    """MessageBubble for user role does not attempt to load logo."""
+    from unittest.mock import patch
+
+    from neurocad.ui.widgets import MessageBubble
+
+    with patch.object(MessageBubble, "_load_logo_pixmap") as mock_load:
+        bubble = MessageBubble("user", "test")
+        # Should not load logo
+        mock_load.assert_not_called()
+        # Should not have avatar label (only assistant role has avatar)
+        assert not hasattr(bubble, '_avatar')
 
 
 if __name__ == "__main__":

@@ -17,6 +17,13 @@ ADAPTERS: dict[str, type[LLMAdapter]] = {
     "anthropic": AnthropicAdapter,
 }
 
+_OPENAI_VALID_KEYS = {"api_key", "model", "base_url", "max_tokens", "temperature", "timeout"}
+_ANTHROPIC_VALID_KEYS = {"api_key", "model", "max_tokens", "temperature", "timeout"}
+_ADAPTER_VALID_KEYS = {
+    "openai": _OPENAI_VALID_KEYS,
+    "anthropic": _ANTHROPIC_VALID_KEYS,
+}
+
 
 def _resolve_api_key(provider: str) -> str:
     """Retrieve API key from environment or keyring.
@@ -52,7 +59,8 @@ def load_adapter(config: dict[str, Any]) -> LLMAdapter:
     if adapter_cls is None:
         raise ValueError(f"Unknown provider: {provider}")
     api_key = _resolve_api_key(provider)
-    adapter_config = {k: v for k, v in config.items() if k != "provider"}
+    valid_keys = _ADAPTER_VALID_KEYS.get(provider, set())
+    adapter_config = {k: v for k, v in config.items() if k in valid_keys}
     adapter_config["api_key"] = api_key
     return adapter_cls(**adapter_config)
 
@@ -65,6 +73,7 @@ def load_adapter_with_session_key(
     adapter_cls = ADAPTERS.get(provider)
     if adapter_cls is None:
         raise ValueError(f"Unknown provider: {provider}")
-    adapter_config = {k: v for k, v in config.items() if k != "provider"}
+    valid_keys = _ADAPTER_VALID_KEYS.get(provider, set())
+    adapter_config = {k: v for k, v in config.items() if k in valid_keys}
     adapter_config["api_key"] = session_key
     return adapter_cls(**adapter_config)
