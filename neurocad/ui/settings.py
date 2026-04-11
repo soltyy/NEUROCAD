@@ -48,6 +48,16 @@ class SettingsDialog(QtWidgets.QDialog):
         url_layout.addWidget(self._base_url_edit, 1)
         layout.addLayout(url_layout)
 
+        # Timeout
+        timeout_layout = QtWidgets.QHBoxLayout()
+        timeout_layout.addWidget(QtWidgets.QLabel("LLM timeout (s):"))
+        self._timeout_spin = QtWidgets.QDoubleSpinBox()
+        self._timeout_spin.setRange(1.0, 600.0)
+        self._timeout_spin.setDecimals(0)
+        self._timeout_spin.setSingleStep(5.0)
+        timeout_layout.addWidget(self._timeout_spin, 1)
+        layout.addLayout(timeout_layout)
+
         # API Key
         key_layout = QtWidgets.QHBoxLayout()
         key_layout.addWidget(QtWidgets.QLabel("API Key:"))
@@ -93,6 +103,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._provider_combo.setCurrentText(self._config.get("provider", "openai"))
         self._model_edit.setText(self._config.get("model", "gpt-4o-mini"))
         self._base_url_edit.setText(self._config.get("base_url", ""))
+        self._timeout_spin.setValue(float(self._config.get("timeout", 120.0)))
         # API key is not stored in config; leave blank
         self._api_key_edit.clear()
 
@@ -110,9 +121,10 @@ class SettingsDialog(QtWidgets.QDialog):
         provider = self._provider_combo.currentText().strip()
         model = self._model_edit.text().strip()
         base_url = self._base_url_edit.text().strip()
+        timeout = float(self._timeout_spin.value())
         api_key = self._api_key_edit.text().strip()
 
-        config = {"provider": provider}
+        config = {"provider": provider, "timeout": timeout}
         if model:
             config["model"] = model
         if base_url:

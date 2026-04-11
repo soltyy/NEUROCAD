@@ -157,7 +157,7 @@ def test_submit_starts_worker_and_disables_input(qapp):
         dock._add_message = MagicMock()
         dock._set_busy = MagicMock()
         dock._input = MagicMock()
-        dock._input.text.return_value = "test request"
+        dock._input.toPlainText.return_value = "test request"
         dock._input.clear = MagicMock()
         dock._adapter = MagicMock()
         dock._history = MagicMock()
@@ -189,6 +189,36 @@ def test_submit_starts_worker_and_disables_input(qapp):
                 mock_worker_instance.start.assert_called_once_with(
                     "test request", mock_doc, dock._adapter, dock._history
                 )
+
+
+def test_submit_uses_configured_llm_timeout_for_watchdog(qapp):
+    """_on_submit should start the watchdog with the configured LLM timeout."""
+    with patch("neurocad.ui.panel.FreeCADGui", MagicMock(), create=True) as mock_gui:
+        mock_gui.getMainWindow.return_value = None
+        import neurocad.ui.panel
+
+        neurocad.ui.panel._panel_dock = None
+        dock = CopilotPanel()
+        dock._config = {"timeout": 120.0}
+        dock._add_message = MagicMock()
+        dock._set_busy = MagicMock()
+        dock._input = MagicMock()
+        dock._input.toPlainText.return_value = "test request"
+        dock._input.clear = MagicMock()
+        dock._adapter = MagicMock()
+        dock._history = MagicMock()
+        dock._request_watchdog = MagicMock()
+
+        with patch("neurocad.ui.panel.get_active_document") as mock_get_doc, \
+             patch("neurocad.ui.panel.LLMWorker") as MockWorker:
+            mock_doc = MagicMock()
+            mock_get_doc.return_value = mock_doc
+            mock_worker_instance = MagicMock()
+            MockWorker.return_value = mock_worker_instance
+
+            dock._on_submit()
+
+        dock._request_watchdog.start.assert_called_once_with(120000)
 
 
 def test_panel_shows_compact_statuses(qapp):
@@ -419,6 +449,96 @@ def test_variant_b_visual_semantics(qapp):
     neutral_bubble = MessageBubble("feedback", "some info")
     assert "border-left: 3px solid #94a3b8" in neutral_bubble.styleSheet()
 
+
+
+def test_queue_scroll_to_bottom_schedules_timer(qapp):
+    """_queue_scroll_to_bottom schedules a singleShot timer."""
+    from unittest.mock import patch
+
+    from neurocad.ui.panel import CopilotPanel
+
+    dock = CopilotPanel()
+    dock._scroll_pending = False
+    with patch("neurocad.ui.panel.QtCore.QTimer.singleShot") as mock_single:
+        dock._queue_scroll_to_bottom()
+        # Should set pending flag
+        assert dock._scroll_pending is True
+        # Should schedule timer with 0 timeout and scroll_to_bottom callback
+        mock_single.assert_called_once_with(0, dock._scroll_to_bottom)
+    # Second call while pending should not schedule again
+    with patch("neurocad.ui.panel.QtCore.QTimer.singleShot") as mock_single:
+        dock._queue_scroll_to_bottom()
+        mock_single.assert_not_called()
+
+
+def test_adaptive_input_height_cap_respects_panel_height(qapp):
+    """AdaptivePlainTextEdit maximum height is half of scroll area height."""
+    from neurocad.ui.panel import AdaptivePlainTextEdit, CopilotPanel
+
+    dock = CopilotPanel()
+    # Set scroll area height
+    dock._scroll_area.setFixedHeight(400)
+    # Input should have been created with scroll_area reference
+    input_widget = dock._input
+    assert isinstance(input_widget, AdaptivePlainTextEdit)
+    # Mock height() return value
+    with patch.object(dock._scroll_area, "height", return_value=400):
+        max_height = input_widget._get_max_height()
+        # Should be half of 400 = 200, but not less than minimum
+        # minimum height is font line spacing + 10, approx > 20
+        # So max_height should be 200
+        assert max_height == 200
+    # If scroll area height is zero, fallback to 200
+    with patch.object(dock._scroll_area, "height", return_value=0):
+        max_height = input_widget._get_max_height()
+        assert max_height == 200
+    # If scroll area height is small, max height should be at least minimum
+    with patch.object(dock._scroll_area, "height", return_value=30):
+        max_height = input_widget._get_max_height()
+        # half is 15, but minimum is larger, so max_height == minimum
+        assert max_height == input_widget.minimumHeight()
+
+
+def test_message_bubble_fold_unfold(qapp):
+    """MessageBubble folds long text and toggles expansion."""
+    from neurocad.ui.widgets import FOLD_THRESHOLD_CHARS, MessageBubble
+
+    # Create bubble with text just below threshold
+    short_text = "a" * (FOLD_THRESHOLD_CHARS - 1)
+    bubble = MessageBubble("user", short_text)
+    assert bubble._need_fold is False
+    assert bubble._expand_button.isHidden() is True
+    assert bubble._label.text() == short_text
+
+    # Create bubble with text above threshold
+    long_text = "b" * (FOLD_THRESHOLD_CHARS + 100)
+    bubble = MessageBubble("user", long_text)
+    assert bubble._need_fold is True
+    assert bubble._expand_button.isHidden() is False
+    # Initially not expanded, should show preview with ellipsis
+    expected_preview = long_text[:FOLD_THRESHOLD_CHARS] + "…"
+    assert bubble._label.text() == expected_preview
+    assert bubble._expand_button.text() == "…"
+
+    # Click expand button (simulate)
+    bubble._toggle_expand()
+    assert bubble._is_expanded is True
+    assert bubble._label.text() == long_text
+    assert bubble._expand_button.text() == "−"
+
+    # Collapse again
+    bubble._toggle_expand()
+    assert bubble._is_expanded is False
+    assert bubble._label.text() == expected_preview
+    assert bubble._expand_button.text() == "…"
+
+    # Append text while folded
+    bubble.append_text(" extra")
+    assert bubble._text.endswith(" extra")
+    # Need fold should remain True
+    assert bubble._need_fold is True
+    # Preview updated
+    assert bubble._label.text().startswith(long_text[:FOLD_THRESHOLD_CHARS])
 
 
 if __name__ == "__main__":

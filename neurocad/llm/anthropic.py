@@ -8,12 +8,19 @@ from .base import LLMAdapter, LLMResponse
 class AnthropicAdapter(LLMAdapter):
     """Adapter for Anthropic Claude API."""
 
-    def __init__(self, api_key: str, model: str = "claude-3-haiku-20240307",
-                 max_tokens: int = 4096, temperature: float = 0.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-3-haiku-20240307",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        timeout: float = 120.0,
+    ):
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.timeout = timeout
 
     def complete(self, messages, system="", tools=None) -> LLMResponse:
         """Send a request and get a single response."""

@@ -6,3 +6,17 @@
 /.roomodes
 /.ruff_cache
 /.venv
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+.coverage
+.coverage.*
+htmlcov/
+neurocad/config/__pycache__/*
+tests/__pycache__/*
+

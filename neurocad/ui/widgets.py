@@ -1,20 +1,39 @@
 """Custom Qt widgets for NeuroCad UI."""
 
+
 from .compat import Qt, QtWidgets
 
+FOLD_THRESHOLD_CHARS = 300
 
 class MessageBubble(QtWidgets.QFrame):
     """A chat bubble displaying a message with role styling."""
 
-    def __init__(self, role: str, text: str = "", parent=None):
+    def __init__(self, role: str, text: str = "", parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.role = role
         self._text = text
+        self._need_fold = len(text) > FOLD_THRESHOLD_CHARS
+        self._is_expanded = False
+
+        # Determine display text (preview if folded)
+        if self._need_fold and not self._is_expanded:
+            display_text = text[:FOLD_THRESHOLD_CHARS] + "…"
+        else:
+            display_text = text
 
         # Create label (common for all roles)
-        self._label = QtWidgets.QLabel(text, self)
+        self._label = QtWidgets.QLabel(display_text, self)
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # type: ignore[attr-defined]
+
+        # Expand button (ellipsis/minus)
+        self._expand_button = QtWidgets.QPushButton("…", self)
+        self._expand_button.setFixedSize(20, 20)
+        self._expand_button.setStyleSheet(
+            "QPushButton { border: none; background: transparent; color: #666; }"
+        )
+        self._expand_button.clicked.connect(self._toggle_expand)
+        self._expand_button.setVisible(self._need_fold)
 
         # Layout differs per role
         if role == "assistant":
@@ -34,6 +53,7 @@ class MessageBubble(QtWidgets.QFrame):
             """)
             hbox.addWidget(self._avatar)
             hbox.addWidget(self._label, 1)  # stretch
+            hbox.addWidget(self._expand_button)
             hbox.setContentsMargins(10, 8, 10, 8)
             # No card styling (transparent background, no border)
             self.setStyleSheet("""
@@ -46,6 +66,11 @@ class MessageBubble(QtWidgets.QFrame):
             # Vertical layout for user and feedback
             vbox = QtWidgets.QVBoxLayout(self)
             vbox.addWidget(self._label)
+            # Button row: stretch + button
+            button_row = QtWidgets.QHBoxLayout()
+            button_row.addStretch()
+            button_row.addWidget(self._expand_button)
+            vbox.addLayout(button_row)
             vbox.setContentsMargins(10, 8, 10, 8)
 
             if role == "user":
@@ -84,10 +109,33 @@ class MessageBubble(QtWidgets.QFrame):
                     }
                 """)
 
-    def append_text(self, chunk: str):
+    def _toggle_expand(self) -> None:
+        """Toggle expanded/collapsed state."""
+        self._is_expanded = not self._is_expanded
+        self._update_display()
+
+    def _update_display(self) -> None:
+        """Update label text and button visibility based on expanded state."""
+        if self._is_expanded:
+            self._label.setText(self._text)
+            self._expand_button.setText("−")
+        else:
+            if self._need_fold:
+                preview = self._text[:FOLD_THRESHOLD_CHARS] + "…"
+                self._label.setText(preview)
+            else:
+                self._label.setText(self._text)
+            self._expand_button.setText("…")
+        # Ensure button visible only if folding needed
+        self._expand_button.setVisible(self._need_fold)
+
+    def append_text(self, chunk: str) -> None:
         """Append text to the bubble (streaming)."""
         self._text += chunk
-        self._label.setText(self._text)
+        # Re-evaluate if folding needed after text grows
+        if not self._need_fold and len(self._text) > FOLD_THRESHOLD_CHARS:
+            self._need_fold = True
+        self._update_display()
 
 
 class StatusDot(QtWidgets.QLabel):
@@ -99,12 +147,12 @@ class StatusDot(QtWidgets.QLabel):
         "error": "#f44336",
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setFixedSize(12, 12)
         self.set_state("idle")
 
-    def set_state(self, state: str):
+    def set_state(self, state: str) -> None:
         """Set visual state: 'idle', 'thinking', 'error'."""
         color = self._COLORS.get(state, "#cccccc")
         self.setStyleSheet(f"""

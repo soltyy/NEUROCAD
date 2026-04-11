@@ -13,6 +13,47 @@ from ..llm.registry import load_adapter
 from .compat import Qt, QtCore, QtWidgets
 from .widgets import MessageBubble, StatusDot
 
+
+class AdaptivePlainTextEdit(QtWidgets.QPlainTextEdit):
+    """Multi-line input with adaptive height and Enter-to-submit, Shift+Enter for newline."""
+
+    submitted = QtCore.Signal()
+
+    def __init__(self, parent=None, scroll_area=None):
+        super().__init__(parent)
+        self.setPlaceholderText("Type your CAD request...")
+        self._scroll_area_ref = scroll_area
+        self.setMaximumHeight(self._get_max_height())
+        self.setMinimumHeight(self.fontMetrics().lineSpacing() + 10)
+        self.textChanged.connect(self._adjust_height)
+
+    def _get_max_height(self):
+        """Return maximum allowed height based on scroll area height."""
+        if self._scroll_area_ref is not None and self._scroll_area_ref.height() > 0:
+            # half of scroll area height, but not less than minimum
+            return max(self._scroll_area_ref.height() // 2, self.minimumHeight())
+        # fallback
+        return 200
+
+    def _adjust_height(self):
+        doc = self.document()
+        line_count = doc.lineCount()
+        font_height = self.fontMetrics().lineSpacing()
+        margins = self.contentsMargins()
+        total_height = font_height * line_count + margins.top() + margins.bottom() + 10
+        max_height = self._get_max_height()
+        new_height = min(max_height, max(total_height, self.minimumHeight()))
+        self.setMaximumHeight(new_height)
+        self.updateGeometry()
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_Return and not event.modifiers() & QtCore.Qt.ShiftModifier:
+            self.submitted.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 # Global singleton dock widget
 _panel_dock = None
 
@@ -53,8 +94,10 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._worker = None
         self._history = History()
         self._adapter = None
+        self._config = {}
         self._request_watchdog = None
         self._last_new_objects = []
+        self._scroll_pending = False
 
         self._build_ui()
         self._connect_signals()
@@ -64,12 +107,14 @@ class CopilotPanel(QtWidgets.QDockWidget):
         """Load adapter from config (falls back to mock if no key)."""
         try:
             config = load_config()
+            self._config = config
             log_info(
                 "panel.init_adapter",
                 "loading adapter",
                 provider=config.get("provider"),
                 model=config.get("model"),
                 base_url=config.get("base_url"),
+                timeout=config.get("timeout"),
             )
             self._adapter = load_adapter(config)
             log_info(
@@ -80,12 +125,16 @@ class CopilotPanel(QtWidgets.QDockWidget):
         except Exception as e:
             # If no API key is configured, we'll keep adapter as None
             # and show an error when user tries to submit.
+            if not self._config:
+                self._config = load_config()
             self._adapter = None
             log_warn("panel.init_adapter", "adapter unavailable", error=e)
 
     def set_adapter(self, adapter):
         """Set adapter directly (e.g., from Use once session)."""
         self._adapter = adapter
+        if adapter is not None and hasattr(adapter, "timeout"):
+            self._config["timeout"] = float(adapter.timeout)
         if adapter is not None:
             from ..core.debug import log_info
             log_info(
@@ -118,8 +167,8 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._scroll_content = scroll_content
 
         # Input elements
-        self._input = QtWidgets.QLineEdit()
-        self._input.setPlaceholderText("Type your CAD request...")
+        self._input = AdaptivePlainTextEdit(scroll_area=self._scroll_area)
+        # placeholder already set in class
         self._send_btn = QtWidgets.QPushButton("→")
         self._snapshot_btn = QtWidgets.QPushButton("Snapshot")
         self._export_btn = QtWidgets.QPushButton("Export")
@@ -222,12 +271,17 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
         layout.addWidget(self._input_box)
 
+    def _llm_timeout_ms(self) -> int:
+        """Return configured LLM timeout in milliseconds for the UI watchdog."""
+        timeout_s = float(self._config.get("timeout", 120.0))
+        return max(1000, int(timeout_s * 1000))
+
     def _connect_signals(self):
         """Connect UI signals."""
         self._send_btn.clicked.connect(self._on_submit)
         self._snapshot_btn.clicked.connect(self._on_snapshot_requested)
         self._export_btn.clicked.connect(self._on_export_requested)
-        self._input.returnPressed.connect(self._on_submit)
+        self._input.submitted.connect(self._on_submit)
 
     def _add_message(self, role: str, text: str):
         """Append a message bubble to the chat area."""
@@ -237,10 +291,18 @@ class CopilotPanel(QtWidgets.QDockWidget):
         else:
             self._scroll_layout.addWidget(bubble, alignment=Qt.AlignLeft)  # type: ignore[attr-defined]
         # Scroll to bottom
+        self._queue_scroll_to_bottom()
+
+    def _queue_scroll_to_bottom(self):
+        """Schedule a scroll to bottom if not already pending."""
+        if self._scroll_pending:
+            return
+        self._scroll_pending = True
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
         """Scroll chat area to the bottom."""
+        self._scroll_pending = False
         scrollbar = self._scroll_area.verticalScrollBar()
         if scrollbar is not None:
             scrollbar.setValue(scrollbar.maximum())
@@ -259,7 +321,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
     def _on_submit(self):
         """Handle Send button or Enter press."""
-        text = self._input.text().strip()
+        text = self._input.toPlainText().strip()
         if not text:
             return
         log_info("panel.submit", "received user request", text=text)
@@ -296,7 +358,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
             on_error=self._on_worker_error,
         )
         self._worker.start(text, doc, self._adapter, self._history)
-        self._request_watchdog.start(30000)
+        self._request_watchdog.start(self._llm_timeout_ms())
 
     def _on_chunk(self, chunk: str):
         """Append a chunk of LLM response to the assistant message."""
@@ -410,7 +472,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
         """Release the UI if a request appears stuck for too long."""
         if self._worker is None or not self._worker.is_running():
             return
-        log_error("panel.timeout", "request watchdog fired", timeout_ms=30000)
+        log_error("panel.timeout", "request watchdog fired", timeout_ms=self._llm_timeout_ms())
         self._worker.cancel()
         self._worker = None
         self._set_busy(False)

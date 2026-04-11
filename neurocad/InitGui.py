@@ -5,7 +5,11 @@ import os
 
 import FreeCADGui  # type: ignore
 
-_wb_dir = os.path.dirname(inspect.getfile(inspect.currentframe()))
+frame = inspect.currentframe()
+if frame is None:
+    _wb_dir = os.path.dirname(os.path.abspath(__file__))
+else:
+    _wb_dir = os.path.dirname(inspect.getfile(frame))
 FreeCADGui.addIconPath(os.path.join(_wb_dir, "resources", "icons"))
 
 
@@ -75,7 +79,7 @@ class SettingsCommand:
         }
 
     def Activated(self):
-        import FreeCADGui # type: ignore
+        import FreeCADGui  # type: ignore
 
         from neurocad.ui.panel import get_panel_dock
         from neurocad.ui.settings import SettingsDialog

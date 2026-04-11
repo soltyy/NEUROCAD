@@ -1,6 +1,19 @@
 # NeuroCad · Sprint Plans v0.7
 **Дата:** 2026-04-10 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
+## Оглавление
+
+- [Sprint 1 — Scaffold + Workbench + Panel + Core Infrastructure](#sprint-1--scaffold--workbench--panel--core-infrastructure)
+- [Sprint 2 — LLM Adapter + Executor + Agent Loop + LLMWorker](#sprint-2--llm-adapter--executor--agent-loop--llmworker)
+- [Актуальное состояние на 2026-04-10](#актуальное-состояние-на-2026-04-10)
+- [Sprint 2.1 — Stabilization Gate для завершения Sprint 2](#sprint-21--stabilization-gate-для-завершения-sprint-2)
+- [Sprint 3 — Settings + Export + Benchmark + Dog-food](#sprint-3--settings--export--benchmark--dog-food)
+- [Sprint 4 — Capability Boundary + Safe-Fail + Benchmark Hardening](#sprint-4--capability-boundary--safe-fail--benchmark-hardening)
+- [Sprint 4.1 — Release Recovery + Workbench Availability](#sprint-41--release-recovery--workbench-availability)
+- [Sprint 5.1 — UI Refresh + Visual Hardening](#sprint-51--ui-refresh--visual-hardening)
+- [Sprint 5.2 — User Bubble Rendering Fix](#sprint-52--user-bubble-rendering-fix)
+- [Сводная таблица: что изменилось от v0.1 → v0.7](#сводная-таблица-что-изменилось-от-v01--v07)
+
 ---
 
 # Sprint 1 — Scaffold + Workbench + Panel + Core Infrastructure
@@ -340,7 +353,7 @@ Sprint 3 принимается как завершённый этап **с по
 
 # Sprint 5.1 — UI Refresh + Visual Hardening
 **Нед. 11 · Python 3.11 · FreeCAD 1.1**
-**Статус:** planned
+**Статус:** implemented (pending PM review)
 
 **Предусловие:** Sprint 4.1 закрыт как recovery baseline. Sprint 5.1 не расширяет capability scope и не меняет main-thread execution semantics; он поднимает только визуальное качество release UI. Icon path fix уже закрыт отдельным фиксом и не входит в scope этого спринта.
 
@@ -350,10 +363,10 @@ Sprint 3 принимается как завершённый этап **с по
 
 **Rolling Plan (старт)**
 ```
-1. NC-DEV-UI-005A      / Developer / Claude-style panel layout refresh                    / planned
-2. NC-DEV-UI-006A      / Developer / Fold/unfold long assistant and code messages          / planned
-3. NC-DEV-CORE-013A    / Developer / Prompt-exec consistency for blocked tokens            / planned
-4. NC-PM-REVIEW-005A   / PM        / Review UI refresh against release constraints         / planned
+1. NC-DEV-UI-005A      / Developer / Claude-style panel layout refresh                    / completed
+2. NC-DEV-UI-006A      / Developer / Fold/unfold long assistant and code messages          / completed
+3. NC-DEV-CORE-013A    / Developer / Prompt-exec consistency for blocked tokens            / completed
+4. NC-PM-REVIEW-005A   / PM        / Review UI refresh against release constraints         / pending PM review
 ```
 
 ---
@@ -368,10 +381,44 @@ Sprint 3 принимается как завершённый этап **с по
 | **NC-PM-REVIEW-005A** | PM | 4 | Проверить UI refresh и prompt-exec consistency как continuation Sprint 4.1 | Закрытый checklist | Layout стал чище без регрессии runtime semantics; assistant bubble stream append не сломан; feedback states визуально различимы; user prompt не обрезается визуально; поле ввода растёт по высоте автоматически, но не более половины панели; окно сообщений автоматически показывает последнее сообщение; длинные assistant/code сообщения корректно сворачиваются и раскрываются; supported-case больше не деградирует в blocked-token path на `import`; automated gate остаётся clean | (1) Claude-style layout визуально применён (2) `_status_dot` сохранён (3) поле ввода auto-resize по высоте, но capped at 50% panel height (4) окно сообщений auto-scroll до последнего сообщения любого типа (5) `_progress_bar` удалён без регрессии статусов (6) assistant streaming bubble работает (7) feedback colors различимы по semantic bucket (8) user prompt отображается полностью без truncation (9) длинные assistant/code сообщения fold/unfold без потери текста (10) supported prompt не приводит к blocked-token failure из-за `import math` (11) worker/agent path не изменён (12) ruff/mypy/pytest clean |
 
 **Факт статуса на 2026-04-11:**
-- `NC-DEV-UI-005A` — planned; implementation not started in current tree.
+- `NC-DEV-UI-005A` — completed; UI refresh with adaptive input, auto‑scroll, full user prompt display, Claude‑style layout.
+- `NC-DEV-UI-006A` — completed; fold/unfold for long messages, streaming‑compatible.
+- `NC-DEV-CORE-013A` — completed; prompt tightened with math‑import guidance, regression test added.
+- `NC-PM-REVIEW-005A` — pending PM review.
+
+---
+
+# Sprint 5.2 — User Bubble Rendering Fix
+**Нед. 12 · Python 3.11 · FreeCAD 1.1**
+**Статус:** planned
+
+**Предусловие:** Sprint 5.1 используется как baseline визуального refresh. Sprint 5.2 не меняет capability scope, worker/agent path или threading model; он закрывает точечные defects в отображении user prompt, статусной зоны панели, auto-scroll для status-like сообщений, visual identity assistant bubble и убирает жёсткий лимит `MAX_OBJECTS = 5` в executor.
+
+## Цель
+
+Устранить UI-bugs, при которых user prompt в правом bubble визуально схлопывается и выглядит обрезанным, статус `Ready` занимает лишнее место в нижней части панели, auto-scroll не доводит viewport до последних feedback/status-like сообщений (`Execution failed`, `Failed after 1 attempts`, `Request sent`), assistant bubble использует placeholder `N` вместо логотипа NeuroCad, а executor жёстко ограничивает создание объектов значением `5` вместо настраиваемого лимита. Исправление должно затрагивать только rendering/layout path для UI-части и config-driven executor contract для лимита объектов.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-UI-006A      / Developer / Fix user bubble truncation and right-aligned layout   / planned
+2. NC-DEV-CORE-014A    / Developer / Configurable max created objects limit                 / planned
+3. NC-PM-REVIEW-006A   / PM        / Review Sprint 5.2 UI/core corrective scope            / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-UI-006A** | Developer | 1 | Исправить визуальное обрезание user prompt в чате, перенести статус из нижней зоны панели в title bar, починить auto-scroll для feedback/status-like сообщений и заменить placeholder avatar на логотип NeuroCad | `ui/widgets.py`, `ui/panel.py`, `resources/icons/neurocad.svg`, `tests/test_panel.py` | Введённый prompt `вокруг куба 10 конусов` отображается в user bubble полностью; длинный user prompt переносится на новую строку; user bubble остаётся справа; user prompt не fold/unfold и не превращается в preview; нижний текстовый статус `Ready` удалён из input box; статус отображается в верхней строке рядом с `NeuroCad`; круглый status indicator остаётся на одной линии с заголовком и выровнен не по самому краю панели, а соосно правой геометрии scroll area/полосы скролла; assistant bubble использует логотип `neurocad/resources/icons/neurocad.svg` вместо буквы `N`, и логотип расположен слева от assistant message; assistant/feedback bubbles не получают регрессии; auto-scroll всегда доводит viewport до последнего сообщения любого типа, включая `Request sent`, `Execution failed` и `Failed after 1 attempts ...` | `TASK CODE: NC-DEV-UI-006A` / Исправить визуальное обрезание user prompt в чате NeuroCad, переработать placement status indicator, починить auto-scroll для feedback/status-like сообщений и заменить placeholder assistant avatar на логотип NeuroCad. Проблему решать как UI-bug, не меняя submit/data path, worker, agent, history, executor или threading semantics. В `neurocad/ui/widgets.py` для `MessageBubble(role="user")` сделать отдельный layout-контракт bubble, не полагаться только на `QLabel.setWordWrap(True)`, задать явный horizontal size policy и max-width contract относительно доступной ширины scroll viewport/panel, сохранить `wordWrap=True`, не включать fold/unfold для user prompt и не укорачивать `_text` preview-логикой. Для assistant bubble заменить текущий placeholder avatar `N` на логотип из `neurocad/resources/icons/neurocad.svg`; логотип располагать по левой стороне assistant message как устойчивый visual marker, без смещения текста вправо за пределы текущего layout contract. В `neurocad/ui/panel.py` в `_add_message()` для `role == "user"` перестать добавлять bubble напрямую через `addWidget(..., alignment=Qt.AlignRight)` и вместо этого использовать row-container: `QWidget` + `QHBoxLayout` + `addStretch()` + `addWidget(user_bubble)`, затем добавлять этот row-container в scroll layout. Добавить deterministic path обновления max width user bubble при resize панели/scroll viewport, чтобы при narrow panel prompt переносился на новую строку, а не схлопывался в chip-like width. Удалить нижний текстовый статус `Ready` из input box; само состояние перенести в верхнюю строку title bar рядом с `NeuroCad`; круглый status indicator оставить на одной линии с заголовком, но сместить от правого края так, чтобы он был визуально соосен области правого scroll gutter/полосе прокрутки, а не прижат к рамке панели. Исправить auto-scroll path так, чтобы после добавления или обновления любого status-like/feedback сообщения viewport гарантированно прокручивался к последнему элементу истории; отдельно закрыть сценарии `Request sent`, `Execution failed` и `Failed after 1 attempts: ...`, где сейчас последнее сообщение может остаться вне видимой области. Обновить `_set_busy()` и related UI state path так, чтобы нижнего status label больше не было, а верхняя status zone отражала `Ready` / `Thinking...` / промежуточные статусы без потери текущего status-dot semantics. Не менять `text = self._input.toPlainText().strip()` и не менять передачу текста в worker/history. В `tests/test_panel.py` добавить регрессии: `_on_submit()` передаёт полный текст `вокруг куба 10 конусов` в `_add_message("user", ...)`; `MessageBubble("user", long_text)` хранит полный `_text`, не переводится в preview/fold state и имеет `wordWrap=True`; user message рендерится через right-aligned row-container, получает max-width contract и не режется до первых слов; нижний status label отсутствует; status indicator и status text находятся в верхней строке рядом с `NeuroCad`; assistant bubble использует логотип `neurocad.svg` слева; auto-scroll после feedback/status-like сообщений доводит viewport до последнего элемента истории. Не менять worker, agent, executor, history, `_on_exec_needed`, `_on_worker_done`, `_on_worker_error`, threading semantics или capability scope. |
+| **NC-DEV-CORE-014A** | Developer | 2 | Вынести лимит создаваемых объектов из executor в настройку и поднять default до `1000` | `core/executor.py`, `config/config.py`, `ui/settings.py`, `tests/test_executor.py`, `tests/test_config.py`, `tests/test_settings.py` | Жёсткий `MAX_OBJECTS = 5` удалён из runtime path; лимит читается из настройки; default value равен `1000`; настройка редактируема через settings UI; при отсутствии значения используется `1000`; тесты подтверждают configurable limit и отсутствие старого hardcode `5` | `TASK CODE: NC-DEV-CORE-014A` / Вынести лимит числа новых объектов из `neurocad/core/executor.py` в настройку и установить default `1000`. Не выполнять изменение как ad-hoc constant edit; перевести его на config-driven contract. В `executor.py` убрать жёсткий `MAX_OBJECTS = 5` и заменить на чтение значения из конфигурации с безопасным fallback `1000`. В `config/config.py` добавить/поддержать ключ настройки для лимита объектов; в `ui/settings.py` добавить поле редактирования этого значения в SettingsDialog. Обновить tests: `tests/test_executor.py` должен проверять configurable object limit и default `1000`; `tests/test_config.py` и `tests/test_settings.py` должны покрывать загрузку/сохранение нового параметра. Не менять worker, agent retry semantics, threading model или capability scope; меняется только источник значения лимита. |
+| **NC-PM-REVIEW-006A** | PM | 3 | Проверить fix user bubble rendering, status placement, auto-scroll, assistant logo и configurable object limit после Sprint 5.1 baseline | Закрытый checklist | Root cause устранена в rendering/layout path; user prompt больше не выглядит обрезанным; нижняя status zone удалена; статус перенесён в верхнюю строку панели; auto-scroll работает и для feedback/status-like сообщений; assistant bubble использует логотип NeuroCad слева; executor больше не держит hardcoded limit `5`, а использует настройку с default `1000`; данные submit path не изменены; regression tests покрывают сценарий; automated gate по изменённым файлам clean | (1) user prompt `вокруг куба 10 конусов` отображается полностью (2) длинный user prompt переносится строками (3) user bubble остаётся справа (4) user bubble не fold/unfold и не preview-only (5) нижний `Ready` отсутствует в input box (6) status text и круглый indicator находятся в верхней строке рядом с `NeuroCad` (7) indicator выровнен соосно правой геометрии scroll area, а не прижат к краю панели (8) auto-scroll доводит viewport до последнего сообщения любого типа, включая `Request sent`, `Execution failed` и `Failed after 1 attempts ...` (9) assistant bubble использует логотип `neurocad.svg`, расположенный слева от сообщения (10) hardcoded object limit `5` удалён из executor runtime path (11) configurable object limit default=`1000` (12) submit/data path не менялся (13) assistant/feedback bubbles без регрессии (14) pytest/ruff/mypy по изменённым файлам clean |
+
+**Факт статуса на 2026-04-11:**
 - `NC-DEV-UI-006A` — planned.
-- `NC-DEV-CORE-013A` — planned.
-- `NC-PM-REVIEW-005A` — planned.
+- `NC-DEV-CORE-014A` — planned.
+- `NC-PM-REVIEW-006A` — planned.
 
 ---
 

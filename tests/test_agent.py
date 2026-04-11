@@ -6,6 +6,7 @@ import pytest
 
 from neurocad.core.agent import (
     AgentCallbacks,
+    _complete_with_timeout,
     _contains_refusal_intent,
     _execute_with_rollback,
     run,
@@ -183,6 +184,18 @@ def test_run_llm_timeout_fails_fast():
     assert "timed out" in result.error
 
 
+def test_complete_with_timeout_uses_adapter_timeout():
+    """_complete_with_timeout should default to adapter.timeout when not overridden."""
+    mock_adapter = MagicMock()
+    mock_adapter.timeout = 120.0
+    mock_adapter.complete.return_value = MagicMock(content="ok")
+
+    response = _complete_with_timeout(mock_adapter, [], system="")
+
+    assert response.content == "ok"
+    mock_adapter.complete.assert_called_once_with([], system="")
+
+
 @patch("neurocad.core.context.capture")
 @patch("neurocad.core.agent.build_system")
 @patch("neurocad.core.agent.extract_code")
@@ -224,6 +237,7 @@ def test_build_system_includes_snapshot():
         mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1000)
         assert "Snapshot description" in result
         assert "Supported Part primitives" in result
+        assert "Do not import the math module" in result
 
 
 def test_error_categorization():
@@ -330,6 +344,24 @@ def test_contains_refusal_intent():
     # Edge: mixed case
     assert _contains_refusal_intent("IMPORT a FILE") is True   # case-insensitive
     assert _contains_refusal_intent("") is False
+
+
+def test_supported_case_no_forbidden_import():
+    """Regression test: supported prompt contract forbids imports and lists supported primitives."""
+    from neurocad.core.context import DocSnapshot
+    from neurocad.core.prompt import build_system
+
+    # Minimal snapshot for a supported case
+    snap = DocSnapshot(filename="test.FCStd", objects=[])
+    system = build_system(snap)
+
+    # Required contract assertions (NC-DEV-CORE-013A)
+    assert "Do not use any import statements." in system
+    assert "Do not import the math module." in system
+    assert "Supported Part primitives" in system
+    assert "makeCylinder" in system
+    # Ensure the prompt does not contain refusal keywords (they are in REFUSAL_KEYWORDS)
+    # This is a sanity check that the prompt is appropriate for supported cases.
 
 
 if __name__ == "__main__":

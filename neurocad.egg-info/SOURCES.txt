@@ -36,7 +36,9 @@ tests/test_compat.py
 tests/test_config.py
 tests/test_context.py
 tests/test_executor.py
+tests/test_exporter.py
 tests/test_history.py
 tests/test_panel.py
+tests/test_settings.py
 tests/test_validator.py
 tests/test_worker.py

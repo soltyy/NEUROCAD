@@ -10,6 +10,11 @@ except ImportError:
     keyring = None  # type: ignore[assignment]
 
 
+DEFAULT_PROVIDER = "openai"
+DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_TIMEOUT = 120.0
+
+
 def _get_config_dir() -> Path:
     """Determine the configuration directory using FreeCAD's user data location.
 
@@ -41,13 +46,18 @@ def load() -> dict[str, Any]:
     """
     config_file = _get_config_dir() / "config.json"
     if not config_file.exists():
-        return {"provider": "openai", "model": "gpt-4o-mini"}
+        return {
+            "provider": DEFAULT_PROVIDER,
+            "model": DEFAULT_MODEL,
+            "timeout": DEFAULT_TIMEOUT,
+        }
 
     with open(config_file, encoding="utf-8") as f:
         data: dict[str, Any] = json.load(f)
     # Ensure required keys exist
-    data.setdefault("provider", "openai")
-    data.setdefault("model", "gpt-4o-mini")
+    data.setdefault("provider", DEFAULT_PROVIDER)
+    data.setdefault("model", DEFAULT_MODEL)
+    data.setdefault("timeout", DEFAULT_TIMEOUT)
     return data
 
 

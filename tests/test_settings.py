@@ -21,6 +21,7 @@ def test_settings_dialog_initialization(qapp):
         assert dialog._provider_combo is not None
         assert dialog._model_edit is not None
         assert dialog._base_url_edit is not None
+        assert dialog._timeout_spin is not None
         assert dialog._api_key_edit is not None
         # Provider combo is populated
         assert dialog._provider_combo.count() > 0
@@ -36,6 +37,8 @@ def test_collect_config():
     dialog._model_edit.text.return_value = "claude-3-5-sonnet"
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = "https://api.anthropic.com"
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
     dialog._api_key_edit = MagicMock()
     dialog._api_key_edit.text.return_value = "secret-key"
 
@@ -44,6 +47,7 @@ def test_collect_config():
         "provider": "anthropic",
         "model": "claude-3-5-sonnet",
         "base_url": "https://api.anthropic.com",
+        "timeout": 120.0,
     }
     assert key == "secret-key"
 
@@ -54,6 +58,7 @@ def test_collect_config():
     assert "model" not in config
     assert "base_url" not in config
     assert config["provider"] == "anthropic"
+    assert config["timeout"] == 120.0
 
 
 def test_on_save_with_keyring(qapp):
@@ -68,6 +73,8 @@ def test_on_save_with_keyring(qapp):
     dialog._model_edit.text.return_value = "gpt-4o"
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
     dialog._api_key_edit = MagicMock()
     dialog._api_key_edit.text.return_value = "key123"
 
@@ -81,6 +88,7 @@ def test_on_save_with_keyring(qapp):
         mock_save.assert_called_once_with({
             "provider": "openai",
             "model": "gpt-4o",
+            "timeout": 120.0,
         })
         # Verify API key saved
         mock_save_key.assert_called_once_with("openai", "key123")
@@ -98,6 +106,8 @@ def test_on_save_without_keyring(qapp):
     dialog._model_edit.text.return_value = ""
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
     dialog._api_key_edit = MagicMock()
     dialog._api_key_edit.text.return_value = "key123"
 
@@ -110,7 +120,7 @@ def test_on_save_without_keyring(qapp):
          patch("neurocad.ui.settings.QtWidgets.QMessageBox.warning") as mock_warning:
         dialog._on_save()
         # Config still saved
-        mock_save.assert_called_once_with({"provider": "openai"})
+        mock_save.assert_called_once_with({"provider": "openai", "timeout": 120.0})
         # Warning message shown
         mock_warning.assert_called_once()
 
@@ -124,6 +134,8 @@ def test_on_use_once(qapp):
     dialog._model_edit.text.return_value = "gpt-4o"
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
     dialog._api_key_edit = MagicMock()
     dialog._api_key_edit.text.return_value = "session-key"
 
@@ -137,7 +149,7 @@ def test_on_use_once(qapp):
         dialog._on_use_once()
         # Should call load_adapter_with_session_key with config and key
         mock_load.assert_called_once_with(
-            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "openai", "model": "gpt-4o", "timeout": 120.0},
             "session-key"
         )
         # Adapter stored
@@ -154,11 +166,13 @@ def test_load_current(qapp):
     dialog._provider_combo = MagicMock()
     dialog._model_edit = MagicMock()
     dialog._base_url_edit = MagicMock()
+    dialog._timeout_spin = MagicMock()
     dialog._api_key_edit = MagicMock()
     dialog._config = {
         "provider": "anthropic",
         "model": "claude-3-5-sonnet",
         "base_url": "https://api.anthropic.com",
+        "timeout": 120.0,
     }
 
     dialog._load_current()
@@ -168,6 +182,7 @@ def test_load_current(qapp):
     dialog._model_edit.setText.assert_called_once_with("claude-3-5-sonnet")
     # Base URL line edit set
     dialog._base_url_edit.setText.assert_called_once_with("https://api.anthropic.com")
+    dialog._timeout_spin.setValue.assert_called_once_with(120.0)
     # API key line edit cleared
     dialog._api_key_edit.clear.assert_called_once_with()
 
@@ -178,11 +193,13 @@ def test_load_current_no_keyring(qapp):
     dialog._provider_combo = MagicMock()
     dialog._model_edit = MagicMock()
     dialog._base_url_edit = MagicMock()
+    dialog._timeout_spin = MagicMock()
     dialog._api_key_edit = MagicMock()
     dialog._config = {"provider": "openai"}
 
     dialog._load_current()
     # API key line edit cleared (no placeholder set)
+    dialog._timeout_spin.setValue.assert_called_once_with(120.0)
     dialog._api_key_edit.clear.assert_called_once_with()
 
 

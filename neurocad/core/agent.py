@@ -81,8 +81,10 @@ def _contains_refusal_intent(text: str) -> bool:
     return any(re.search(rf'\b{re.escape(kw)}\b', lower) for kw in REFUSAL_KEYWORDS)
 
 
-def _complete_with_timeout(adapter, messages, system: str, timeout_s: float = 12.0):
+def _complete_with_timeout(adapter, messages, system: str, timeout_s: float | None = None):
     """Run adapter.complete() with a hard timeout guard."""
+    if timeout_s is None:
+        timeout_s = float(getattr(adapter, "timeout", 120.0))
     payload: dict[str, object] = {"response": None, "error": None}
 
     def _target():

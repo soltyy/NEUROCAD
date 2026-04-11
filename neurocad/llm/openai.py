@@ -19,7 +19,7 @@ class OpenAIAdapter(LLMAdapter):
         base_url: str = "https://api.openai.com/v1",
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        timeout: float = 20.0,
+        timeout: float = 120.0,
     ):
         self.api_key = api_key
         self.model = model
