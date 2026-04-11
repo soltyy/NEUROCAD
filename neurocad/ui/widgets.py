@@ -1,7 +1,15 @@
 """Custom Qt widgets for NeuroCad UI."""
 
 
-from .compat import Qt, QtWidgets
+from .compat import Qt, QtWidgets, QtGui
+
+try:
+    from PySide6 import QtSvg
+    HAS_SVG = True
+except ImportError:
+    HAS_SVG = False
+
+from pathlib import Path
 
 FOLD_THRESHOLD_CHARS = 300
 
@@ -13,6 +21,8 @@ class MessageBubble(QtWidgets.QFrame):
         self.role = role
         self._text = text
         self._need_fold = len(text) > FOLD_THRESHOLD_CHARS
+        if role == "user":
+            self._need_fold = False
         self._is_expanded = False
 
         # Determine display text (preview if folded)
@@ -39,18 +49,31 @@ class MessageBubble(QtWidgets.QFrame):
         if role == "assistant":
             # Horizontal layout: avatar left, label right
             hbox = QtWidgets.QHBoxLayout(self)
-            # Avatar "N"
-            self._avatar = QtWidgets.QLabel("N", self)
+            # Avatar logo
+            self._avatar = QtWidgets.QLabel(self)
             self._avatar.setFixedSize(24, 24)
-            self._avatar.setStyleSheet("""
-                QLabel {
-                    background-color: #2563eb;
-                    border-radius: 12px;
-                    color: white;
-                    font-weight: bold;
-                    qproperty-alignment: AlignCenter;
-                }
-            """)
+            # Try to load SVG logo
+            pixmap = self._load_logo_pixmap()
+            if pixmap is not None:
+                self._avatar.setPixmap(pixmap)
+                self._avatar.setStyleSheet("""
+                    QLabel {
+                        background-color: transparent;
+                        border: none;
+                    }
+                """)
+            else:
+                # Fallback to letter "N" with blue background
+                self._avatar.setText("N")
+                self._avatar.setStyleSheet("""
+                    QLabel {
+                        background-color: #2563eb;
+                        border-radius: 12px;
+                        color: white;
+                        font-weight: bold;
+                        qproperty-alignment: AlignCenter;
+                    }
+                """)
             hbox.addWidget(self._avatar)
             hbox.addWidget(self._label, 1)  # stretch
             hbox.addWidget(self._expand_button)
@@ -66,11 +89,12 @@ class MessageBubble(QtWidgets.QFrame):
             # Vertical layout for user and feedback
             vbox = QtWidgets.QVBoxLayout(self)
             vbox.addWidget(self._label)
-            # Button row: stretch + button
-            button_row = QtWidgets.QHBoxLayout()
-            button_row.addStretch()
-            button_row.addWidget(self._expand_button)
-            vbox.addLayout(button_row)
+            # Button row: stretch + button (only for non-user roles that need fold)
+            if role != "user":
+                button_row = QtWidgets.QHBoxLayout()
+                button_row.addStretch()
+                button_row.addWidget(self._expand_button)
+                vbox.addLayout(button_row)
             vbox.setContentsMargins(10, 8, 10, 8)
 
             if role == "user":
@@ -108,6 +132,24 @@ class MessageBubble(QtWidgets.QFrame):
                         font-style: italic;
                     }
                 """)
+
+    def _load_logo_pixmap(self):
+        """Load neurocad.svg as QPixmap, scaled to 24x24."""
+        if not HAS_SVG:
+            return None
+        try:
+            svg_path = Path(__file__).parent.parent.parent / "resources/icons/neurocad.svg"
+            if not svg_path.exists():
+                return None
+            renderer = QtSvg.QSvgRenderer(str(svg_path))
+            pixmap = QtGui.QPixmap(24, 24)
+            pixmap.fill(Qt.transparent)
+            painter = QtGui.QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            return pixmap
+        except Exception:
+            return None
 
     def _toggle_expand(self) -> None:
         """Toggle expanded/collapsed state."""

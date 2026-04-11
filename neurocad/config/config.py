@@ -13,6 +13,7 @@ except ImportError:
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TIMEOUT = 120.0
+DEFAULT_MAX_CREATED_OBJECTS = 1000
 
 
 def _get_config_dir() -> Path:
@@ -50,6 +51,7 @@ def load() -> dict[str, Any]:
             "provider": DEFAULT_PROVIDER,
             "model": DEFAULT_MODEL,
             "timeout": DEFAULT_TIMEOUT,
+            "max_created_objects": DEFAULT_MAX_CREATED_OBJECTS,
         }
 
     with open(config_file, encoding="utf-8") as f:
@@ -58,6 +60,7 @@ def load() -> dict[str, Any]:
     data.setdefault("provider", DEFAULT_PROVIDER)
     data.setdefault("model", DEFAULT_MODEL)
     data.setdefault("timeout", DEFAULT_TIMEOUT)
+    data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
     return data
 
 

@@ -58,6 +58,15 @@ class SettingsDialog(QtWidgets.QDialog):
         timeout_layout.addWidget(self._timeout_spin, 1)
         layout.addLayout(timeout_layout)
 
+        # Max created objects
+        max_objects_layout = QtWidgets.QHBoxLayout()
+        max_objects_layout.addWidget(QtWidgets.QLabel("Max created objects per request:"))
+        self._max_objects_spin = QtWidgets.QSpinBox()
+        self._max_objects_spin.setRange(1, 10000)
+        self._max_objects_spin.setSingleStep(100)
+        max_objects_layout.addWidget(self._max_objects_spin, 1)
+        layout.addLayout(max_objects_layout)
+
         # API Key
         key_layout = QtWidgets.QHBoxLayout()
         key_layout.addWidget(QtWidgets.QLabel("API Key:"))
@@ -104,6 +113,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._model_edit.setText(self._config.get("model", "gpt-4o-mini"))
         self._base_url_edit.setText(self._config.get("base_url", ""))
         self._timeout_spin.setValue(float(self._config.get("timeout", 120.0)))
+        self._max_objects_spin.setValue(int(self._config.get("max_created_objects", 1000)))
         # API key is not stored in config; leave blank
         self._api_key_edit.clear()
 
@@ -122,9 +132,10 @@ class SettingsDialog(QtWidgets.QDialog):
         model = self._model_edit.text().strip()
         base_url = self._base_url_edit.text().strip()
         timeout = float(self._timeout_spin.value())
+        max_objects = self._max_objects_spin.value()
         api_key = self._api_key_edit.text().strip()
 
-        config = {"provider": provider, "timeout": timeout}
+        config = {"provider": provider, "timeout": timeout, "max_created_objects": max_objects}
         if model:
             config["model"] = model
         if base_url:
