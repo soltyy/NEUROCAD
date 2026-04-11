@@ -124,14 +124,15 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._snapshot_btn = QtWidgets.QPushButton("Snapshot")
         self._export_btn = QtWidgets.QPushButton("Export")
         # Style secondary buttons (Snapshot, Export)
-        self._snapshot_btn.setFixedHeight(28)
-        self._export_btn.setFixedHeight(28)
+        self._snapshot_btn.setFixedHeight(24)
+        self._export_btn.setFixedHeight(24)
         secondary_style = """
             QPushButton {
-                background-color: #f8f8f8;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                padding: 4px 8px;
+                background: #f9fafb;
+                color: #6b7280;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+                padding: 3px 10px;
                 font-size: 11px;
             }
             QPushButton:hover {
@@ -187,9 +188,9 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._input_box = QtWidgets.QFrame()
         self._input_box.setStyleSheet("""
             QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
+                background: white;
+                border: 1px solid #d1d5db;
+                border-radius: 12px;
             }
         """)
         input_box_layout = QtWidgets.QVBoxLayout(self._input_box)

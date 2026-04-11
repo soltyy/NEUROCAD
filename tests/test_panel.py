@@ -357,13 +357,17 @@ def test_variant_b_visual_semantics(qapp):
     # Export button text unchanged
     assert dock._export_btn.text() == "Export"
 
-    # Secondary buttons have fixed height 28px
-    assert dock._snapshot_btn.minimumHeight() == 28
-    assert dock._export_btn.minimumHeight() == 28
+    # Secondary buttons have fixed height 24px
+    assert dock._snapshot_btn.minimumHeight() == 24
+    assert dock._export_btn.minimumHeight() == 24
     # Secondary buttons have secondary style tokens
     snapshot_style = dock._snapshot_btn.styleSheet()
-    assert "background-color: #f8f8f8" in snapshot_style
-    assert "border: 1px solid #ccc" in snapshot_style
+    assert "background: #f9fafb" in snapshot_style
+    assert "color: #6b7280" in snapshot_style
+    assert "border: 1px solid #d1d5db" in snapshot_style
+    assert "border-radius: 10px" in snapshot_style
+    assert "padding: 3px 10px" in snapshot_style
+    assert "font-size: 11px" in snapshot_style
 
     # Send button is round blue 30x30 (already tested by existing style)
     assert dock._send_btn.width() == 30
@@ -375,8 +379,9 @@ def test_variant_b_visual_semantics(qapp):
     # Input box exists and has Claude-style container styling
     assert hasattr(dock, "_input_box")
     input_box_style = dock._input_box.styleSheet()
-    assert "border: 1px solid #e0e0e0" in input_box_style
-    assert "border-radius: 8px" in input_box_style
+    assert "background: white" in input_box_style
+    assert "border: 1px solid #d1d5db" in input_box_style
+    assert "border-radius: 12px" in input_box_style
 
     # MessageBubble styling checks via creating instances
     from neurocad.ui.widgets import MessageBubble
@@ -397,7 +402,6 @@ def test_variant_b_visual_semantics(qapp):
     bubble_style = assistant_bubble.styleSheet()
     assert "background-color: transparent" in bubble_style
     assert "border: none" in bubble_style
-
     feedback_bubble = MessageBubble("feedback", "success")
     # Should have left border only
     assert "border-left: 3px solid" in feedback_bubble.styleSheet()
@@ -405,6 +409,16 @@ def test_variant_b_visual_semantics(qapp):
     label_style = feedback_bubble._label.styleSheet()
     assert "font-size: 11px" in label_style
     assert "font-style: italic" in label_style
+    # Feedback semantic palette
+    success_bubble = MessageBubble("feedback", "success")
+    assert "border-left: 3px solid #22c55e" in success_bubble.styleSheet()
+    unsupported_bubble = MessageBubble("feedback", "unsupported operation")
+    assert "border-left: 3px solid #f59e0b" in unsupported_bubble.styleSheet()
+    failed_bubble = MessageBubble("feedback", "failed")
+    assert "border-left: 3px solid #ef4444" in failed_bubble.styleSheet()
+    neutral_bubble = MessageBubble("feedback", "some info")
+    assert "border-left: 3px solid #94a3b8" in neutral_bubble.styleSheet()
+
 
 
 if __name__ == "__main__":
