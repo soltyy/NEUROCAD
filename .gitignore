@@ -1,22 +1,16 @@
 /.DS_Store
 /.bash_profile
-/.mypy_cache
-/.pytest_cache
+/.mypy_cache/
+/.pytest_cache/
 /.roo
 /.roomodes
-/.ruff_cache
-/.venv
+/.ruff_cache/
+/.venv/
 
-# Python caches and build artifacts
+# Python cache directories
 __pycache__/
-*.py[cod]
-*$py.class
-*.pyo
-*.pyd
-.Python
-.coverage
-.coverage.*
+.hypothesis/
+.nox/
+.pytype/
+.tox/
 htmlcov/
-neurocad/config/__pycache__/*
-tests/__pycache__/*
-
