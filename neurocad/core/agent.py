@@ -56,6 +56,20 @@ def _categorize_error(error: str) -> str:
     return "runtime"
 
 
+def _is_blocked_import(error: str) -> bool:
+    """Return True if the blocked token is 'import' or 'from'."""
+    if error is None:
+        return False
+    error_lower = error.lower()
+    if "blocked token" in error_lower:
+        # Check for 'import' or 'from' token
+        # Example: "Blocked token 'import' found at line 1"
+        import_pos = error_lower.find("'import'")
+        from_pos = error_lower.find("'from'")
+        return import_pos != -1 or from_pos != -1
+    return False
+
+
 def _make_feedback(error: str, category: str) -> str:
     """Return a concise user-facing feedback message."""
     if category == "blocked_token":
@@ -104,12 +118,12 @@ def _complete_with_timeout(adapter, messages, system: str, timeout_s: float | No
 
 
 def _execute_with_rollback(code: str, doc) -> ExecResult:
-    """Execute code inside a FreeCAD transaction named 'NeuroCad'.
+    """Execute code inside a FreeCAD transaction named 'NeuroCAD'.
 
     Rolls back the transaction if execution fails or geometry is invalid.
     """
     log_info("agent.exec", "opening FreeCAD transaction", document=getattr(doc, "Name", None))
-    doc.openTransaction("NeuroCad")  # type: ignore
+    doc.openTransaction("NeuroCAD")  # type: ignore
     try:
         result = execute(code, doc)
         if not result.ok:
@@ -326,7 +340,7 @@ def run(
             )
             callbacks.on_status(f"execution failed: {feedback}")
             # Retry loop continues unless error is non-retriable
-            if category in ("blocked_token", "unsupported_api"):
+            if category == "unsupported_api" or (category == "blocked_token" and not _is_blocked_import(last_error)):
                 return AgentResult(
                     ok=False,
                     attempts=attempts,

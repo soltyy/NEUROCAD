@@ -28,7 +28,7 @@ def test_execute_with_rollback_success():
             mock_validate.return_value.ok = True
             result = _execute_with_rollback("code", mock_doc)
             assert result.ok is True
-            mock_doc.openTransaction.assert_called_once_with("NeuroCad")
+            mock_doc.openTransaction.assert_called_once_with("NeuroCAD")
             mock_doc.commitTransaction.assert_called_once()
             mock_doc.abortTransaction.assert_not_called()
 
@@ -291,7 +291,7 @@ def test_run_non_retriable_errors():
                 mock_exec.return_value = ExecResult(
                     ok=False,
                     new_objects=[],
-                    error="Blocked token 'import' found at line 1",
+                    error="Blocked token 'FreeCADGui' found at line 1",
                 )
                 result = run("make a box", mock_doc, mock_adapter, history)
                 assert result.ok is False
@@ -344,6 +344,57 @@ def test_contains_refusal_intent():
     # Edge: mixed case
     assert _contains_refusal_intent("IMPORT a FILE") is True   # case-insensitive
     assert _contains_refusal_intent("") is False
+
+
+def test_blocked_import_triggers_corrective_regeneration():
+    """Blocked import error should trigger corrective regeneration and not be final user-visible failure."""
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.executor import ExecResult
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    # First response contains import statement, triggering blocked_token error
+    # Second response is valid code without import
+    mock_adapter.complete.side_effect = [
+        MagicMock(content="```python\nimport math\nPart.makeBox(10,10,10)\n```"),
+        MagicMock(content="```python\nPart.makeBox(10,10,10)\n```"),
+    ]
+    history = History()
+
+    with patch("neurocad.core.context.capture") as mock_capture, \
+         patch("neurocad.core.agent.build_system") as mock_build_system, \
+         patch("neurocad.core.agent.extract_code") as mock_extract, \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        mock_capture.return_value = MagicMock()
+        mock_build_system.return_value = "system"
+        # Extract code returns the raw code (with import first, without import second)
+        mock_extract.side_effect = lambda x: x.strip("```python\n").strip("```").strip()
+        # First execution returns blocked token error, second succeeds
+        mock_exec.side_effect = [
+            ExecResult(
+                ok=False,
+                new_objects=[],
+                error="Blocked token 'import' found at line 1",
+            ),
+            ExecResult(
+                ok=True,
+                new_objects=["Box"],
+            ),
+        ]
+        result = run("make a box", mock_doc, mock_adapter, history)
+
+        # Should have attempted twice (first blocked import, then success)
+        assert result.attempts == 2
+        assert result.ok is True
+        assert "Box" in result.new_objects
+        # Ensure the final error is not a blocked_token error
+        assert "Blocked token" not in (result.error or "")
+        # Verify adapter.complete called twice
+        assert mock_adapter.complete.call_count == 2
+        # Verify that the feedback included "forbidden tokens" (category blocked_token)
+        # This is implicitly covered by the retry logic.
 
 
 def test_supported_case_no_forbidden_import():

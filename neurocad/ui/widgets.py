@@ -34,6 +34,8 @@ class MessageBubble(QtWidgets.QFrame):
         # Create label (common for all roles)
         self._label = QtWidgets.QLabel(display_text, self)
         self._label.setWordWrap(True)
+        # Enable wrapping anywhere for long unbroken tokens
+        self._label.setStyleSheet("QLabel { word-wrap: break-word; }")
         self._label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # type: ignore[attr-defined]
 
         # Expand button (ellipsis/minus)

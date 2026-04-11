@@ -8,6 +8,7 @@ Do not use any import statements.
 Mathematical operations can be performed using Python's built‑in functions
 and FreeCAD's vector math (FreeCAD.Vector).
 Do not import the math module.
+Even for circular or radial patterns, do not import math; use Python's built‑in functions and FreeCAD's vector math.
 Use the already available names: FreeCAD, Part, PartDesign, Sketcher, Draft, Mesh, App, doc.
 Do not use FreeCADGui.
 Prefer modifying the existing active document referenced by `doc`.

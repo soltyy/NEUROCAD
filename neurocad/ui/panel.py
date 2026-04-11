@@ -18,17 +18,29 @@ class AdaptivePlainTextEdit(QtWidgets.QPlainTextEdit):
     """Multi-line input with adaptive height and Enter-to-submit, Shift+Enter for newline."""
 
     submitted = QtCore.Signal()
+    _FIXED_OVERHEAD = 61  # sum of container margins, spacing, divider, toolbar height
 
-    def __init__(self, parent=None, scroll_area=None):
+    def __init__(self, parent=None, scroll_area=None, container=None):
         super().__init__(parent)
         self.setPlaceholderText("Type your CAD request...")
         self._scroll_area_ref = scroll_area
+        self._container_ref = container
         self.setMaximumHeight(self._get_max_height())
         self.setMinimumHeight(self.fontMetrics().lineSpacing() + 10)
         self.textChanged.connect(self._adjust_height)
 
     def _get_max_height(self):
-        """Return maximum allowed height based on scroll area height."""
+        """Return maximum allowed height based on container or scroll area height."""
+        # First, try container-based limit (container max height minus fixed overhead)
+        if self._container_ref is not None:
+            container_max = self._container_ref.maximumHeight()
+            # Qt default maximum is 16777215, treat as unlimited
+            if container_max < 16777215:
+                # Subtract fixed overhead (margins, spacing, divider, toolbar)
+                available = container_max - self._FIXED_OVERHEAD
+                if available > self.minimumHeight():
+                    return max(available, self.minimumHeight())
+        # Fallback to scroll area half (previous behavior)
         if self._scroll_area_ref is not None and self._scroll_area_ref.height() > 0:
             # half of scroll area height, but not less than minimum
             return max(self._scroll_area_ref.height() // 2, self.minimumHeight())
@@ -268,8 +280,27 @@ class CopilotPanel(QtWidgets.QDockWidget):
         toolbar_row.addStretch()
         toolbar_row.addWidget(self._send_btn)
         input_box_layout.addLayout(toolbar_row)
+        # Stretch factors: input row expands, divider and toolbar stay fixed
+        input_box_layout.setStretch(0, 1)   # input row
+        input_box_layout.setStretch(1, 0)   # divider
+        input_box_layout.setStretch(2, 0)   # toolbar row
 
         layout.addWidget(self._input_box)
+
+        # Give scroll area all extra vertical space
+        layout.setStretch(0, 1)   # scroll area
+        layout.setStretch(1, 0)   # input container
+
+        # Set container reference for adaptive height
+        self._input._container_ref = self._input_box
+
+        # Minimum height: sum of internal elements and margins
+        input_min_height = self._input.minimumHeight()
+        container_min_height = input_min_height + self._input._FIXED_OVERHEAD
+        self._input_box.setMinimumHeight(container_min_height)
+
+        # Initial max height limit (half of panel height)
+        self._update_container_max_height()
 
     def _llm_timeout_ms(self) -> int:
         """Return configured LLM timeout in milliseconds for the UI watchdog."""
@@ -574,6 +605,20 @@ class CopilotPanel(QtWidgets.QDockWidget):
         except Exception as e:
             log_error("panel.snapshot", "snapshot failed", error=e)
             self._add_message("feedback", f"Snapshot failed: {e}")
+
+    def _update_container_max_height(self):
+        """Set container max height to half of panel height, respecting minimum."""
+        panel_height = self.height()
+        max_h = max(panel_height // 2, self._input_box.minimumHeight())
+        self._input_box.setMaximumHeight(max_h)
+        # Trigger input height recomputation
+        if hasattr(self._input, '_adjust_height'):
+            self._input._adjust_height()
+
+    def resizeEvent(self, event):
+        """Update container max height when panel is resized."""
+        super().resizeEvent(event)
+        self._update_container_max_height()
 
     def showEvent(self, event):
         """Ensure the dock is raised when shown."""

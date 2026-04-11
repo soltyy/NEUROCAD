@@ -443,9 +443,9 @@ Sprint 3 принимается как завершённый этап **с по
 
 **Rolling Plan (старт)**
 ```
-1. NC-DEV-CORE-015A    / Developer / Rename transaction name from NeuroCad to NeuroCAD      / planned
-2. NC-DEV-UI-008A      / Developer / Stabilize input box height and bottom toolbar layout    / planned
-3. NC-DEV-CORE-016A    / Developer / Fix blocked-import failures on supported CAD prompts    / planned
+1. NC-DEV-CORE-015A    / Developer / Rename transaction name from NeuroCad to NeuroCAD      / completed
+2. NC-DEV-UI-008A      / Developer / Stabilize input box height and bottom toolbar layout    / completed
+3. NC-DEV-CORE-016A    / Developer / Fix blocked-import failures on supported CAD prompts    / completed
 4. NC-PM-REVIEW-007A   / PM        / Review Sprint 5.3 naming, layout, and prompt consistency / planned
 ```
 
@@ -461,9 +461,9 @@ Sprint 3 принимается как завершённый этап **с по
 | **NC-PM-REVIEW-007A** | PM | 4 | Проверить консистентность Sprint 5.3 после Sprint 5.2 baseline | Закрытый checklist | Naming contract, input-layout contract и prompt/sandbox consistency закрыты без architectural drift; automated gate по изменённым файлам clean | (1) transaction name использует `NeuroCAD`, а не `NeuroCad` (2) input container не занимает лишнюю высоту и остаётся минимум по содержимому (3) input area растёт по тексту, но весь нижний контейнер не превышает `50%` высоты панели (4) toolbar row всегда pinned to bottom input container (5) supported prompt вроде `10 кубов вокруг этого куба` не деградирует в финальный blocked-import fail (6) sandbox policy на `import` не ослаблена (7) tests закрепляют новый layout contract, recovery contract и naming contract (8) execution semantics не изменены (9) pytest/ruff/mypy по изменённым файлам clean |
 
 **Факт статуса на 2026-04-11:**
-- `NC-DEV-CORE-015A` — planned.
-- `NC-DEV-UI-008A` — planned.
-- `NC-DEV-CORE-016A` — planned.
+- `NC-DEV-CORE-015A` — completed.
+- `NC-DEV-UI-008A` — completed.
+- `NC-DEV-CORE-016A` — completed.
 - `NC-PM-REVIEW-007A` — planned.
 
 ---
@@ -482,7 +482,7 @@ Sprint 3 принимается как завершённый этап **с по
 | Sandbox check | regex / не определено | tokenize-based `_pre_check()` |
 | FreeCADGui block | не заблокирован | явно в `_BLOCKED_NAME_TOKENS` |
 | Validator | только `Shape.isValid()` | двухступенчатая: `obj.State` → `Shape` |
-| Transaction name | `"CADCopilot"` (расхождение) | `"NeuroCad"` везде |
+| Transaction name | `"CADCopilot"` (расхождение) | `"NeuroCAD"` везде |
 | Input guard | нет | `_set_busy(True/False)` в panel |
 | Exporter | `exportStep(str(path))` без guard | + `Part.OCCError` catch + null shape filter |
 | Benchmark evidence | не определено | ручной FreeCAD benchmark принят как baseline; Sprint 4 переводит его в release-grade safety gate |

@@ -469,31 +469,43 @@ def test_queue_scroll_to_bottom_schedules_timer(qapp):
 
 
 def test_adaptive_input_height_cap_respects_panel_height(qapp):
-    """AdaptivePlainTextEdit maximum height is half of scroll area height."""
+    """AdaptivePlainTextEdit maximum height respects container limit (half panel height minus fixed overhead)."""
     from neurocad.ui.panel import AdaptivePlainTextEdit, CopilotPanel
+    from unittest.mock import patch
 
     dock = CopilotPanel()
-    # Set scroll area height
-    dock._scroll_area.setFixedHeight(400)
-    # Input should have been created with scroll_area reference
+    # Set panel height
+    dock.setFixedHeight(400)
+    # Update container max height (called in _build_ui, but we need to refresh)
+    dock._update_container_max_height()
+    # Input widget should have been created with container reference
     input_widget = dock._input
     assert isinstance(input_widget, AdaptivePlainTextEdit)
-    # Mock height() return value
-    with patch.object(dock._scroll_area, "height", return_value=400):
-        max_height = input_widget._get_max_height()
-        # Should be half of 400 = 200, but not less than minimum
-        # minimum height is font line spacing + 10, approx > 20
-        # So max_height should be 200
-        assert max_height == 200
-    # If scroll area height is zero, fallback to 200
+    # Container max height should be half of panel height (200) because minimum height is less
+    assert dock._input_box.maximumHeight() == 200
+    # Input max height should be container max minus fixed overhead (61)
+    expected = 200 - input_widget._FIXED_OVERHEAD
+    # Ensure it's not less than input's minimum height
+    if expected < input_widget.minimumHeight():
+        expected = input_widget.minimumHeight()
+    max_height = input_widget._get_max_height()
+    assert max_height == expected, f"Expected {expected}, got {max_height}"
+    # If scroll area height is zero, container limit still applies
     with patch.object(dock._scroll_area, "height", return_value=0):
         max_height = input_widget._get_max_height()
-        assert max_height == 200
-    # If scroll area height is small, max height should be at least minimum
+        # Container max is 200, minus fixed overhead = 139 (or minimum)
+        expected_zero = 200 - input_widget._FIXED_OVERHEAD
+        if expected_zero < input_widget.minimumHeight():
+            expected_zero = input_widget.minimumHeight()
+        assert max_height == expected_zero
+    # If scroll area height is small, container limit still dominates
     with patch.object(dock._scroll_area, "height", return_value=30):
         max_height = input_widget._get_max_height()
-        # half is 15, but minimum is larger, so max_height == minimum
-        assert max_height == input_widget.minimumHeight()
+        # Container max is 200, minus fixed overhead = 139 (or minimum)
+        expected_small = 200 - input_widget._FIXED_OVERHEAD
+        if expected_small < input_widget.minimumHeight():
+            expected_small = input_widget.minimumHeight()
+        assert max_height == expected_small
 
 
 def test_message_bubble_fold_unfold(qapp):
