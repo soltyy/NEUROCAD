@@ -460,7 +460,7 @@ comments, no import statements. Comments (#) are allowed.
 The following names are pre-loaded; do NOT import them:
   FreeCAD, App, Base, Part, math, json, doc
 
-Do NOT use FreeCADGui, PartDesign, Sketcher, Draft, Mesh, or any other workbench.
+Do NOT use FreeCADGui.
 Always finish with doc.recompute() when geometry is created or modified.
 
 ## PartDesign vocabulary → Part WB equivalents

@@ -23,6 +23,7 @@ def test_capture_with_objects():
     mock_box.Name = "Box"
     mock_box.TypeId = "Part::Box"
     mock_box.Shape = MagicMock()
+    mock_box.Shape.isNull.return_value = False
     mock_box.Shape.ShapeType = "Solid"
     mock_box.Shape.Volume = 1000.0
     mock_box.Placement = MagicMock()
@@ -129,6 +130,7 @@ def test_capture_extracts_geometric_properties():
     mock_box.Name = "Box"
     mock_box.TypeId = "Part::Box"
     mock_box.Shape = MagicMock()
+    mock_box.Shape.isNull.return_value = False
     mock_box.Shape.ShapeType = "Solid"
     mock_box.Shape.Volume = 1000.0
     mock_box.Placement = MagicMock()
@@ -190,3 +192,28 @@ def test_to_prompt_str_includes_properties():
     snap2 = DocSnapshot(filename="Doc", objects=[obj2])
     result2 = to_prompt_str(snap2)
     assert "props=" not in result2
+
+
+def test_capture_null_shape():
+    """Capture should handle objects with a null shape (isNull() == True)."""
+    mock_obj = MagicMock()
+    mock_obj.Name = "NullShape"
+    mock_obj.TypeId = "Part::Feature"
+    mock_obj.Shape = MagicMock()
+    mock_obj.Shape.isNull = MagicMock(return_value=True)
+    # ShapeType and Volume should not be accessed
+    mock_obj.Shape.ShapeType = "Solid"  # but will not be used
+    mock_obj.Shape.Volume = 1000.0
+    mock_obj.Placement = None
+    mock_obj.Visibility = True
+
+    mock_doc = MagicMock()
+    mock_doc.Name = "Doc"
+    mock_doc.Objects = [mock_obj]
+    mock_doc.ActiveObject = None
+
+    snap = capture(mock_doc)
+    obj = snap.objects[0]
+    assert obj.shape_type is None
+    assert obj.volume_mm3 is None
+    assert obj.visible is True

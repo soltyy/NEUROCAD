@@ -82,10 +82,11 @@ def capture(doc) -> DocSnapshot:
         volume_mm3 = None
         if hasattr(obj, "Shape") and obj.Shape is not None:
             shape = obj.Shape
-            shape_type = shape.ShapeType
-            if hasattr(shape, "Volume"):
-                # Volume is in mm³ for metric parts
-                volume_mm3 = shape.Volume
+            if not shape.isNull():
+                shape_type = shape.ShapeType
+                if hasattr(shape, "Volume"):
+                    # Volume is in mm³ for metric parts
+                    volume_mm3 = shape.Volume
 
         placement = None
         if hasattr(obj, "Placement"):
