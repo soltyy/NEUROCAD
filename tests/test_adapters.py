@@ -42,6 +42,41 @@ def test_load_adapter_missing_key_raises():
         load_adapter({"provider": "openai"})
 
 
+def test_api_key_precedence_order():
+    """Verify precedence: session key → environment variable → keyring."""
+    MockOpenAI = MagicMock()
+    mock_keyring = MagicMock()
+    mock_keyring.get_password.return_value = "keyring-key"
+    with patch.dict("os.environ", {"NEUROCAD_API_KEY_OPENAI": "env-key"}):
+        with patch("neurocad.llm.registry.keyring", mock_keyring):
+            with patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+                # 1. Session key overrides env var and keyring
+                load_adapter({"provider": "openai"}, session_key="session-key")
+                assert MockOpenAI.call_count == 1
+                call_kwargs = MockOpenAI.call_args[1]
+                assert call_kwargs["api_key"] == "session-key"
+                mock_keyring.get_password.assert_not_called()
+                MockOpenAI.reset_mock()
+                mock_keyring.get_password.reset_mock()
+
+                # 2. Env var overrides keyring when session key is None
+                load_adapter({"provider": "openai"}, session_key=None)
+                assert MockOpenAI.call_count == 1
+                call_kwargs = MockOpenAI.call_args[1]
+                assert call_kwargs["api_key"] == "env-key"
+                mock_keyring.get_password.assert_not_called()
+                MockOpenAI.reset_mock()
+                mock_keyring.get_password.reset_mock()
+
+                # 3. Keyring used when env var missing
+                with patch.dict("os.environ", {}, clear=True):
+                    load_adapter({"provider": "openai"})
+                    assert MockOpenAI.call_count == 1
+                    call_kwargs = MockOpenAI.call_args[1]
+                    assert call_kwargs["api_key"] == "keyring-key"
+                    mock_keyring.get_password.assert_called_once_with("neurocad", "openai")
+
+
 def test_load_adapter_env_key():
     """load_adapter() retrieves API key from environment variable."""
     MockOpenAI = MagicMock()

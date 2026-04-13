@@ -287,6 +287,82 @@ def test_settings_max_created_objects_default(qapp):
     assert config["max_created_objects"] == 1000
     assert config["timeout"] == 120.0
 
+def test_missing_keyring_env_var_fallback(qapp):
+    """_on_use_once works when keyring missing but environment variable supplies key."""
+    import os
+    dialog = SettingsDialog()
+    dialog._keyring_available = False
+    # Mock UI elements
+    dialog._provider_combo = MagicMock()
+    dialog._provider_combo.currentText.return_value = "openai"
+    dialog._model_edit = MagicMock()
+    dialog._model_edit.text.return_value = "gpt-4o"
+    dialog._base_url_edit = MagicMock()
+    dialog._base_url_edit.text.return_value = ""
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
+    dialog._max_objects_spin = MagicMock()
+    dialog._max_objects_spin.value.return_value = 1000
+    dialog._api_key_edit = MagicMock()
+    dialog._api_key_edit.text.return_value = "session-key"
+
+    # Set environment variable (should not be used because session key is provided)
+    with patch.dict(os.environ, {"NEUROCAD_API_KEY_OPENAI": "env-key"}):
+        mock_adapter = MagicMock()
+        with patch(
+            "neurocad.ui.settings.load_adapter_with_session_key",
+            return_value=mock_adapter,
+        ) as mock_load, \
+             patch("neurocad.ui.settings.QtWidgets.QMessageBox.information") as mock_info, \
+             patch.object(dialog, "accept") as mock_accept:
+            dialog._on_use_once()
+            # Should call load_adapter_with_session_key with session key
+            mock_load.assert_called_once_with(
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "timeout": 120.0,
+                    "max_created_objects": 1000,
+                },
+                "session-key"
+            )
+            assert dialog._adapter is mock_adapter
+            mock_info.assert_called_once()
+            mock_accept.assert_called_once()
+
+
+def test_session_key_not_persisted(qapp):
+    """Using a session key does not write to keyring."""
+    import sys
+    dialog = SettingsDialog()
+    dialog._keyring_available = True
+    dialog._provider_combo = MagicMock()
+    dialog._provider_combo.currentText.return_value = "openai"
+    dialog._model_edit = MagicMock()
+    dialog._model_edit.text.return_value = "gpt-4o"
+    dialog._base_url_edit = MagicMock()
+    dialog._base_url_edit.text.return_value = ""
+    dialog._timeout_spin = MagicMock()
+    dialog._timeout_spin.value.return_value = 120.0
+    dialog._max_objects_spin = MagicMock()
+    dialog._max_objects_spin.value.return_value = 1000
+    dialog._api_key_edit = MagicMock()
+    dialog._api_key_edit.text.return_value = "session-key"
+
+    mock_keyring = MagicMock()
+    mock_keyring.set_password = MagicMock()
+    with patch.dict(sys.modules, {"keyring": mock_keyring}), \
+         patch(
+             "neurocad.ui.settings.load_adapter_with_session_key",
+             return_value=MagicMock(),
+         ) as mock_load, \
+         patch("neurocad.ui.settings.QtWidgets.QMessageBox.information"), \
+         patch.object(dialog, "accept"):
+        dialog._on_use_once()
+        # Ensure keyring.set_password was NOT called
+        mock_keyring.set_password.assert_not_called()
+        # load_adapter_with_session_key was called
+        mock_load.assert_called_once()
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

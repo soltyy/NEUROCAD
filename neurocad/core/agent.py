@@ -7,14 +7,13 @@ from dataclasses import dataclass
 
 from neurocad.config.defaults import REFUSAL_KEYWORDS
 
-from .code_extractor import extract_code, extract_code_blocks
+from .audit import audit_log, get_correlation_id
+from .code_extractor import extract_code_blocks
 from .debug import log_error, log_info, log_warn
 from .executor import ExecResult, execute
 from .history import History, Role
 from .prompt import build_system
 from .validator import validate
-
-from .audit import audit_log, get_correlation_id
 
 
 @dataclass
@@ -202,7 +201,7 @@ def run(
     audit_log(
         "agent_start",
         {
-            "text_preview": text[:200],
+            "user_prompt_preview": text[:500],
             "provider": getattr(adapter, "provider", type(adapter).__name__),
             "model": getattr(adapter, "model", "unknown"),
             "document_name": getattr(doc, "Name", None),
@@ -219,12 +218,15 @@ def run(
             "agent_error",
             {
                 "error_type": "early_refusal",
-                "text_preview": text[:200],
+                "user_prompt_preview": text[:500],
                 "provider": getattr(adapter, "provider", type(adapter).__name__),
                 "model": getattr(adapter, "model", "unknown"),
                 "document_name": getattr(doc, "Name", None),
                 "attempts": 0,
-                "error": "Unsupported operation: file/import/external-resource operations are not supported.",
+                "error": (
+                    "Unsupported operation: file/import/external-resource "
+                    "operations are not supported."
+                ),
             },
             correlation_id=get_correlation_id(),
         )
@@ -292,7 +294,7 @@ def run(
                 "agent_error",
                 {
                     "error_type": "llm_call_failed",
-                    "text_preview": text[:200],
+                    "user_prompt_preview": text[:500],
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -323,7 +325,7 @@ def run(
                 "agent_error",
                 {
                     "error_type": "no_code_generated",
-                    "text_preview": text[:200],
+                    "user_prompt_preview": text[:500],
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -350,7 +352,13 @@ def run(
         block_feedback = None
 
         for idx, block in enumerate(blocks, start=1):
-            log_info("agent.run", "executing block", block_idx=idx, total_blocks=len(blocks), preview=block[:200])
+            log_info(
+                "agent.run",
+                "executing block",
+                block_idx=idx,
+                total_blocks=len(blocks),
+                preview=block[:200],
+            )
             callbacks.on_status(f"executing block {idx}/{len(blocks)}")
 
             if use_callbacks:
@@ -408,7 +416,9 @@ def run(
             audit_log(
                 "agent_success",
                 {
-                    "text_preview": text[:200],
+                    "user_prompt_preview": text[:500],
+                    "llm_response_preview": llm_text[:500],
+                    "code_preview": (blocks[0] if blocks else "")[:500],
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -430,6 +440,9 @@ def run(
             last_error = block_error
             category = block_category
             feedback = block_feedback
+            assert feedback is not None
+            assert last_error is not None
+            assert category is not None
             history.add(Role.FEEDBACK, feedback)
             log_warn(
                 "agent.run",
@@ -440,14 +453,18 @@ def run(
             )
             callbacks.on_status(f"execution failed: {feedback}")
             # Retry loop continues unless error is non-retriable
-            if category == "unsupported_api" or (category == "blocked_token" and not _is_blocked_import(last_error)):
+            if category == "unsupported_api" or (
+                category == "blocked_token" and not _is_blocked_import(last_error)
+            ):
                 # Audit log
                 audit_log(
                     "agent_error",
                     {
                         "error_type": "execution_error",
                         "error_category": category,
-                        "text_preview": text[:200],
+                        "user_prompt_preview": text[:500],
+                        "llm_response_preview": llm_text[:500],
+                        "code_preview": (blocks[0] if blocks else "")[:500],
                         "provider": getattr(adapter, "provider", type(adapter).__name__),
                         "model": getattr(adapter, "model", "unknown"),
                         "document_name": getattr(doc, "Name", None),
@@ -475,7 +492,9 @@ def run(
         "agent_error",
         {
             "error_type": "max_retries_exhausted",
-            "text_preview": text[:200],
+            "user_prompt_preview": text[:500],
+            "llm_response_preview": llm_text[:500] if 'llm_text' in locals() else "",
+            "code_preview": (blocks[0] if blocks else "")[:500] if 'blocks' in locals() else "",
             "provider": getattr(adapter, "provider", type(adapter).__name__),
             "model": getattr(adapter, "model", "unknown"),
             "document_name": getattr(doc, "Name", None),

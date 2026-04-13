@@ -11,6 +11,7 @@ neurocad/config/config.py
 neurocad/config/defaults.py
 neurocad/core/active_document.py
 neurocad/core/agent.py
+neurocad/core/audit.py
 neurocad/core/code_extractor.py
 neurocad/core/context.py
 neurocad/core/debug.py
@@ -31,6 +32,7 @@ neurocad/ui/widgets.py
 tests/test_active_document.py
 tests/test_adapters.py
 tests/test_agent.py
+tests/test_audit.py
 tests/test_code_extractor.py
 tests/test_compat.py
 tests/test_config.py

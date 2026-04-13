@@ -470,7 +470,7 @@ Sprint 3 принимается как завершённый этап **с по
 
 # Sprint 5.4 — LLM Integration, Auth UX, Multi-Step Execution, and Audit Logging
 **Нед. 14 · Python 3.11 · FreeCAD 1.1**
-**Статус:** planned
+**Статус:** completed
 
 **Предусловие:** Sprint 5.3 используется как baseline. Sprint 5.4 не меняет main-thread execution semantics, FreeCAD transaction path, sandbox policy или capability scope генерации CAD-кода; он системно доводит пользовательский контур взаимодействия с LLM: provider/model configuration, API key lifecycle, adapter diagnostics, session-vs-persistent auth behavior, multi-step execution contract и audit logging. При планировании/реализации опираться на текущий код как source of truth, а устаревшие naming-примеры в `doc/ARCH.md` трактовать как historical context, не как активный contract.
 
@@ -480,16 +480,16 @@ Sprint 3 принимается как завершённый этап **с по
 
 **Rolling Plan (старт)**
 ```
-1. NC-DEV-CORE-017A    / Developer / Formalize API key source and adapter config contract      / planned
-2. NC-DEV-UI-009A      / Developer / Redesign SettingsDialog UX for provider and auth storage   / planned
-3. NC-DEV-UI-009B      / Developer / Surface adapter diagnostics in panel/runtime UI            / planned
-4. NC-DEV-CORE-018A    / Developer / Execute multi-step LLM Python responses sequentially       / planned
-5. NC-DEV-CORE-019A    / Developer / Define audit-log schema, redaction, and rotation contract  / planned
-6. NC-DEV-CORE-020A    / Developer / Implement audit-log file sink and config toggle            / planned
-7. NC-DEV-TEST-005A    / Developer / Regression matrix for key storage and adapter lifecycle    / planned
-8. NC-DEV-TEST-005B    / Developer / Regression matrix for multi-step execution                 / planned
-9. NC-DEV-TEST-005C    / Developer / Regression matrix for audit logging                        / planned
-10. NC-PM-REVIEW-008A  / PM        / Review Sprint 5.4 LLM integration readiness                / planned
+1. NC-DEV-CORE-017A    / Developer / Formalize API key source and adapter config contract      / completed
+2. NC-DEV-UI-009A      / Developer / Redesign SettingsDialog UX for provider and auth storage   / completed
+3. NC-DEV-UI-009B      / Developer / Surface adapter diagnostics in panel/runtime UI            / completed
+4. NC-DEV-CORE-018A    / Developer / Execute multi-step LLM Python responses sequentially       / completed
+5. NC-DEV-CORE-019A    / Developer / Define audit-log schema, redaction, and rotation contract  / completed
+6. NC-DEV-CORE-020A    / Developer / Implement audit-log file sink and config toggle            / completed
+7. NC-DEV-TEST-005A    / Developer / Regression matrix for key storage and adapter lifecycle    / completed
+8. NC-DEV-TEST-005B    / Developer / Regression matrix for multi-step execution                 / completed
+9. NC-DEV-TEST-005C    / Developer / Regression matrix for audit logging                        / completed
+10. NC-PM-REVIEW-008A  / PM        / Review Sprint 5.4 LLM integration readiness                / completed
 ```
 
 ---
@@ -509,17 +509,17 @@ Sprint 3 принимается как завершённый этап **с по
 | **NC-DEV-TEST-005C** | Developer | 8 | Построить regression matrix для audit logging | `tests/test_agent.py`, `tests/test_config.py`, при необходимости новые targeted tests | Audit-log file создаётся только при включённом toggle; JSONL schema соблюдается; redaction policy соблюдается; correlation IDs, timestamps и rotation behavior покрыты тестами | `TASK CODE: NC-DEV-TEST-005C` / Добавить deterministic tests на structured audit logging. Тесты должны проверять: создание файла только при включённом `audit_log_enabled`, JSONL schema, наличие correlation IDs и timestamps, caps/redaction для preview fields, отсутствие API key и secrets в логе, и соблюдение rotation policy. Не смешивать эту задачу с key storage/adapters или multi-step execution tests.` |
 | **NC-PM-REVIEW-008A** | PM | 9 | Проверить Sprint 5.4 как release-grade LLM integration baseline | Закрытый checklist | API key lifecycle, provider UX, adapter diagnostics, multi-step execution contract и audit logging доведены без architectural drift; automated gate по изменённым файлам clean; manual UX checklist для Settings / adapter init понятен | (1) API key precedence contract явно реализован и совпадает с docs (2) `config.json` не хранит api_key (3) `Save` и `Use once` отличаются и понятны пользователю (4) missing keyring и missing key дают ясные user-facing ошибки (5) panel-side diagnostics не получает UI-only config noise и не смешан с Settings UX (6) multi-step LLM Python response выполняется последовательно, а не падает как единый malformed case (7) failure одного step корректно останавливает последующие (8) audit-log contract зафиксирован конкретно: JSONL, schema, redaction caps, rotation policy, toggle, file path (9) audit-log file sink реализован по contract (10) worker/agent/threading semantics не изменены (11) pytest/ruff/mypy по изменённым файлам clean |
 
-**Факт статуса на 2026-04-11:**
-- `NC-DEV-CORE-017A` — planned.
-- `NC-DEV-UI-009A` — planned.
-- `NC-DEV-UI-009B` — planned.
-- `NC-DEV-CORE-018A` — planned.
-- `NC-DEV-CORE-019A` — planned.
-- `NC-DEV-CORE-020A` — planned.
-- `NC-DEV-TEST-005A` — planned.
-- `NC-DEV-TEST-005B` — planned.
-- `NC-DEV-TEST-005C` — planned.
-- `NC-PM-REVIEW-008A` — planned.
+**Факт статуса на 2026-04-12:**
+- `NC-DEV-CORE-017A` — completed.
+- `NC-DEV-UI-009A` — completed.
+- `NC-DEV-UI-009B` — completed.
+- `NC-DEV-CORE-018A` — completed.
+- `NC-DEV-CORE-019A` — completed.
+- `NC-DEV-CORE-020A` — completed.
+- `NC-DEV-TEST-005A` — completed.
+- `NC-DEV-TEST-005B` — completed.
+- `NC-DEV-TEST-005C` — completed.
+- `NC-PM-REVIEW-008A` — completed.
 
 ---
 

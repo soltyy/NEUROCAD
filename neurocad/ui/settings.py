@@ -67,32 +67,53 @@ class SettingsDialog(QtWidgets.QDialog):
         max_objects_layout.addWidget(self._max_objects_spin, 1)
         layout.addLayout(max_objects_layout)
 
+        # Authentication group
+        auth_group = QtWidgets.QGroupBox("Authentication")
+        auth_layout = QtWidgets.QVBoxLayout()
+        auth_layout.setContentsMargins(8, 12, 8, 12)
+        auth_layout.setSpacing(8)
+
         # API Key
         key_layout = QtWidgets.QHBoxLayout()
         key_layout.addWidget(QtWidgets.QLabel("API Key:"))
         self._api_key_edit = QtWidgets.QLineEdit()
         self._api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         key_layout.addWidget(self._api_key_edit, 1)
-        layout.addLayout(key_layout)
+        auth_layout.addLayout(key_layout)
 
-        # Keyring warning (if missing)
+        # Keyring availability
         try:
             import keyring  # noqa: F401
             self._keyring_available = True
         except ImportError:
             self._keyring_available = False
             warning = QtWidgets.QLabel(
-                "⚠️ Keyring package not installed. API keys cannot be saved securely. "
-                "Use 'Use once' for temporary sessions, or install the keyring package."
+                "⚠️ Keyring package not installed. API keys cannot be saved securely.\n"
+                "• Use 'Use once' for temporary sessions.\n"
+                "• Install the keyring package in the FreeCAD Python environment with: pip install keyring"
             )
             warning.setWordWrap(True)
-            warning.setStyleSheet("color: #f39c12;")
-            layout.addWidget(warning)
+            warning.setStyleSheet("color: #f39c12; padding: 4px;")
+            auth_layout.addWidget(warning)
+
+        # Explanation label
+        explanation = QtWidgets.QLabel(
+            "• <b>Save</b> – stores the key securely in your system keyring for future sessions.<br/>"
+            "• <b>Use once</b> – creates a temporary adapter without saving the key."
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("color: #666; font-size: 10pt; margin-top: 4px;")
+        auth_layout.addWidget(explanation)
+
+        auth_group.setLayout(auth_layout)
+        layout.addWidget(auth_group)
 
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
         self._save_btn = QtWidgets.QPushButton("Save")
+        self._save_btn.setToolTip("Save configuration and store API key securely in system keyring.")
         self._use_once_btn = QtWidgets.QPushButton("Use once")
+        self._use_once_btn.setToolTip("Create a temporary adapter with the provided key; key is not saved.")
         self._cancel_btn = QtWidgets.QPushButton("Cancel")
         button_layout.addWidget(self._save_btn)
         button_layout.addWidget(self._use_once_btn)

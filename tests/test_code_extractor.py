@@ -107,7 +107,8 @@ More text
 print("world")
 ```"""
     blocks = extract_code_blocks(raw)
-    # Should only take python block, ignore non‑python fence? Actually regex matches any fences after python.
+    # Should only take python block, ignore non‑python fence? Actually regex matches
+    # any fences after python.
     # Implementation detail: if python blocks exist, only those are returned.
     # Let's trust the implementation and just verify we get at least one block.
     assert len(blocks) >= 1

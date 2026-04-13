@@ -1,5 +1,5 @@
 # ARCH — NeuroCad
-**Version:** v0.3 · **Date:** 2026-04-08
+**Version:** v0.7 · **Date:** 2026-04-12
 **Python 3.11 · FreeCAD 1.0+ · PySide2/PySide6 · провайдер-агностик LLM**
 
 Revision на основе: изучения FreeCAD source (deepwiki.com/FreeCAD/FreeCAD) + ghbalf/freecad-ai production паттернов.
@@ -18,7 +18,7 @@ Revision на основе: изучения FreeCAD source (deepwiki.com/FreeCA
 | `extract_code()` не контрактизирована | `core/code_extractor.py` — отдельный модуль с тестами | best practice |
 | regex-based sandbox check | tokenize-based `_pre_check()` + явный блок `FreeCADGui` | FreeCAD source study |
 | `validator`: только `Shape.isValid()` | двухступенчатая: `obj.State` → `Shape` | FreeCAD src/App/Document.cpp |
-| Транзакция `"CADCopilot"` (расхождение в коде) | Унифицировано `"NeuroCad"` | consistency |
+| Транзакция `"CADCopilot"` (расхождение в коде) | Унифицировано `"NeuroCAD"` | consistency |
 | `workbench.py` + `InitGui.py` = два файла для одного | Workbench класс и команды — прямо в `InitGui.py` | ghbalf/freecad-ai InitGui.py |
 | Input не блокируется во время выполнения | `_set_busy(True/False)` — disable input + send button | correctness |
 

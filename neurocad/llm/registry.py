@@ -1,4 +1,13 @@
-"""Adapter registry and factory."""
+"""Adapter registry and factory.
+
+API key resolution follows a strict precedence contract:
+1. Session key (temporary, supplied via UI "Use once") – highest priority.
+2. Environment variable NEUROCAD_API_KEY_{PROVIDER_UPPERCASE}.
+3. System keyring (service="neurocad", account=provider).
+4. If none found, ValueError is raised with a clear guidance message.
+
+This contract is guaranteed across all adapter loading functions.
+"""
 
 import os
 from typing import Any

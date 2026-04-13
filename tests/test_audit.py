@@ -11,21 +11,20 @@ Covers the acceptance criteria of NC‑DEV‑TEST‑005C:
 """
 
 import json
-import logging
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from neurocad.config.defaults import AUDIT_LOG_MAX_OBJECT_NAMES, AUDIT_LOG_MAX_PREVIEW_CHARS
 from neurocad.core.audit import (
-    init_audit_log,
+    _cap_object_names,
+    _cap_preview,
     audit_log,
     get_correlation_id,
-    _cap_preview,
-    _cap_object_names,
+    init_audit_log,
 )
-from neurocad.config.defaults import AUDIT_LOG_MAX_PREVIEW_CHARS, AUDIT_LOG_MAX_OBJECT_NAMES
 
 
 def test_cap_preview():
@@ -51,7 +50,7 @@ def test_cap_object_names():
     many_names = [f"obj{i}" for i in range(AUDIT_LOG_MAX_OBJECT_NAMES + 5)]
     capped = _cap_object_names(many_names)
     assert len(capped) == AUDIT_LOG_MAX_OBJECT_NAMES + 1
-    assert capped[-1] == f"... and 5 more"
+    assert capped[-1] == "... and 5 more"
     assert capped[:AUDIT_LOG_MAX_OBJECT_NAMES] == many_names[:AUDIT_LOG_MAX_OBJECT_NAMES]
 
     few_names = ["obj1", "obj2"]
@@ -66,7 +65,7 @@ def test_init_audit_log_enabled_creates_file():
         with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
             # Enable audit logging
             init_audit_log({"audit_log_enabled": True})
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             assert log_file.exists()
             # Write a test entry
             audit_log("test_event", {"foo": "bar"})
@@ -91,7 +90,7 @@ def test_init_audit_log_disabled_no_file():
         config_dir.mkdir()
         with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
             init_audit_log({"audit_log_enabled": False})
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             assert not log_file.exists()
             # audit_log should be a no‑op
             audit_log("test_event", {"foo": "bar"})
@@ -110,16 +109,31 @@ def test_audit_log_jsonl_schema():
         with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
             init_audit_log({"audit_log_enabled": True})
             audit_log("test_schema", {"number": 42, "list": [1, 2, 3]})
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             lines = log_file.read_text(encoding="utf-8").strip().splitlines()
             entry = json.loads(lines[0])
             # Mandatory top‑level fields
             assert "timestamp" in entry
             assert isinstance(entry["timestamp"], str)
+            # ISO‑8601 with 'Z' suffix (microsecond precision)
+            import re
+            timestamp_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$"
+            assert re.match(timestamp_pattern, entry["timestamp"]), f"Invalid timestamp format: {entry['timestamp']}"
             assert "correlation_id" in entry
             assert isinstance(entry["correlation_id"], str)
+            # UUID v4 format
+            import uuid as uuid_lib
+            try:
+                uuid_lib.UUID(entry["correlation_id"], version=4)
+            except ValueError:
+                raise AssertionError(f"correlation_id is not a valid UUIDv4: {entry['correlation_id']}")
             assert entry["event_type"] == "test_schema"
             assert "data" in entry
+            assert isinstance(entry["data"], dict)
+            # No extra top‑level fields
+            expected_keys = {"timestamp", "correlation_id", "event_type", "data"}
+            assert set(entry.keys()) == expected_keys, f"Extra keys: {set(entry.keys()) - expected_keys}"
+            # Payload content
             assert entry["data"]["number"] == 42
             assert entry["data"]["list"] == [1, 2, 3]
             # Cleanup
@@ -142,7 +156,7 @@ def test_redaction_of_secret_like_keys():
                 "safe_field": "visible",
                 "some_keyword": "should be removed",  # contains 'key'
             })
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             lines = log_file.read_text(encoding="utf-8").strip().splitlines()
             entry = json.loads(lines[0])
             data = entry["data"]
@@ -150,6 +164,39 @@ def test_redaction_of_secret_like_keys():
             assert "auth_token" not in data
             assert "secret_password" not in data
             assert "some_keyword" not in data
+            assert data["safe_field"] == "visible"
+            # Cleanup
+            import neurocad.core.audit
+            neurocad.core.audit._AUDIT_LOGGER = None
+            neurocad.core.audit._AUDIT_ENABLED = False
+
+def test_redaction_nested_secret_keys():
+    """Nested dicts are removed entirely, regardless of secret-like keys."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_dir = Path(tmpdir) / "config"
+        config_dir.mkdir()
+        with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
+            init_audit_log({"audit_log_enabled": True})
+            audit_log("test_nested", {
+                "top_level_secret": "should be removed",
+                "nested_dict": {
+                    "inner_key": "value",
+                    "inner_secret": "hidden"
+                },
+                "nested_list": ["safe", "also safe"],
+                "safe_field": "visible"
+            })
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
+            lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            entry = json.loads(lines[0])
+            data = entry["data"]
+            # Top-level secret-like key removed
+            assert "top_level_secret" not in data
+            # Nested dict removed entirely
+            assert "nested_dict" not in data
+            # Nested list kept (lists are allowed)
+            assert data["nested_list"] == ["safe", "also safe"]
+            # Safe field kept
             assert data["safe_field"] == "visible"
             # Cleanup
             import neurocad.core.audit
@@ -171,7 +218,7 @@ def test_preview_and_object_name_caps_applied():
                 "new_object_names": many_names,
                 "other_field": "unchanged",
             })
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             lines = log_file.read_text(encoding="utf-8").strip().splitlines()
             entry = json.loads(lines[0])
             data = entry["data"]
@@ -180,7 +227,7 @@ def test_preview_and_object_name_caps_applied():
             assert data["preview"].endswith("...")
             # Object names capped
             assert len(data["new_object_names"]) == AUDIT_LOG_MAX_OBJECT_NAMES + 1
-            assert data["new_object_names"][-1] == f"... and 7 more"
+            assert data["new_object_names"][-1] == "... and 7 more"
             assert data["other_field"] == "unchanged"
             # Cleanup
             import neurocad.core.audit
@@ -199,7 +246,7 @@ def test_correlation_id_consistent_within_session():
             assert cid is not None
             audit_log("event1", {"step": 1})
             audit_log("event2", {"step": 2})
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             lines = log_file.read_text(encoding="utf-8").strip().splitlines()
             for line in lines:
                 entry = json.loads(line)
@@ -220,7 +267,7 @@ def test_correlation_id_override():
             session_cid = get_correlation_id()
             custom_cid = "custom-123"
             audit_log("test_override", {"foo": "bar"}, correlation_id=custom_cid)
-            log_file = config_dir / "logs" / "neurocad-audit.log"
+            log_file = config_dir / "logs" / "llm-audit.jsonl"
             lines = log_file.read_text(encoding="utf-8").strip().splitlines()
             entry = json.loads(lines[0])
             assert entry["correlation_id"] == custom_cid
@@ -234,32 +281,32 @@ def test_correlation_id_override():
 def test_rotation_mocked():
     """RotatingFileHandler is configured with expected parameters."""
     mock_handler = MagicMock()
-    with patch("logging.handlers.RotatingFileHandler", mock_handler):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_dir = Path(tmpdir) / "config"
-            config_dir.mkdir()
-            log_file = config_dir / "logs" / "neurocad-audit.log"
-            with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
-                init_audit_log({"audit_log_enabled": True})
-                # Verify RotatingFileHandler was instantiated with correct args
-                mock_handler.assert_called_once()
-                args, kwargs = mock_handler.call_args
-                # filename is a keyword argument
-                assert kwargs.get("filename") == log_file
-                assert kwargs.get("maxBytes") == 5 * 1024 * 1024  # 5 MiB
-                assert kwargs.get("backupCount") == 5
-                assert kwargs.get("encoding") == "utf-8"
-                # Cleanup
-                import neurocad.core.audit
-                neurocad.core.audit._AUDIT_LOGGER = None
-                neurocad.core.audit._AUDIT_ENABLED = False
+    with patch("logging.handlers.RotatingFileHandler", mock_handler), \
+         tempfile.TemporaryDirectory() as tmpdir:
+        config_dir = Path(tmpdir) / "config"
+        config_dir.mkdir()
+        log_file = config_dir / "logs" / "llm-audit.jsonl"
+        with patch("neurocad.core.audit._get_config_dir", return_value=config_dir):
+            init_audit_log({"audit_log_enabled": True})
+            # Verify RotatingFileHandler was instantiated with correct args
+            mock_handler.assert_called_once()
+            args, kwargs = mock_handler.call_args
+            # filename is a keyword argument
+            assert kwargs.get("filename") == log_file
+            assert kwargs.get("maxBytes") == 5 * 1024 * 1024  # 5 MiB
+            assert kwargs.get("backupCount") == 5
+            assert kwargs.get("encoding") == "utf-8"
+            # Cleanup
+            import neurocad.core.audit
+            neurocad.core.audit._AUDIT_LOGGER = None
+            neurocad.core.audit._AUDIT_ENABLED = False
 
 
 def test_adapter_init_failure_audited(monkeypatch, qapp):
     """When adapter initialization fails, an audit entry is recorded."""
     # Mock audit_log to capture calls
     mock_audit = MagicMock()
-    monkeypatch.setattr("neurocad.core.audit.audit_log", mock_audit)
+    monkeypatch.setattr("neurocad.ui.panel.audit_log", mock_audit)
     # Simulate audit enabled
     monkeypatch.setattr("neurocad.core.audit._AUDIT_ENABLED", True)
     monkeypatch.setattr("neurocad.core.audit._AUDIT_LOGGER", MagicMock())
@@ -285,7 +332,7 @@ def test_adapter_init_failure_audited(monkeypatch, qapp):
     monkeypatch.setattr(CopilotPanel, "_update_status_for_adapter", lambda self: None)
 
     # Create panel (will call _init_adapter)
-    panel = CopilotPanel(None)  # parent=None for test, qapp exists
+    CopilotPanel(None)  # parent=None for test, qapp exists
     # Verify audit_log was called with expected event_type
     mock_audit.assert_called_once()
     call_args = mock_audit.call_args

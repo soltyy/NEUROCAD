@@ -6,8 +6,6 @@ from typing import Any
 
 from neurocad.config.defaults import (
     DEFAULT_AUDIT_LOG_ENABLED,
-    AUDIT_LOG_MAX_PREVIEW_CHARS,
-    AUDIT_LOG_MAX_OBJECT_NAMES,
 )
 
 try:

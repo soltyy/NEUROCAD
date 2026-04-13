@@ -104,8 +104,7 @@ For tests that need a QApplication (UI), `pytest-qt` provides a `qapp` fixture.
 1. Launch FreeCAD (`open /Applications/FreeCAD.app` or start from command line).
 2. Switch to the **NeuroCad** workbench (should appear in the workbench dropdown).
 3. The NeuroCad panel will appear as a dock widget on the right side (lazy‑initialized when the workbench is activated).
-4. Sprint 1 only provides the workbench, dock panel, and snapshot/debug path. Geometry
-   generation and model execution are Sprint 2 functionality.
+4. The NeuroCad workbench now includes full LLM‑powered geometry generation, multi‑step execution, secure key management, and audit logging. For a detailed list of features, see the sprint plans in `doc/SPRINT_PLANS.md`.
 
 ## 8. Development workflow
 
@@ -113,7 +112,7 @@ For tests that need a QApplication (UI), `pytest-qt` provides a `qapp` fixture.
 - Never call `addDockWidget` inside `Initialize()`; use `get_panel_dock()` singleton.
 - Use `get_active_document()` (GUI‑aligned) instead of raw `FreeCAD.ActiveDocument`.
 - Config path is determined by `_get_config_dir()` with fallback (FreeCAD.ConfigGet, XDG, legacy).
-- Transaction name is always `"NeuroCad"`.
+- Transaction name is always `"NeuroCAD"`.
 
 ## 9. Troubleshooting
 
@@ -134,4 +133,4 @@ Run tests with `QT_QPA_PLATFORM=offscreen pytest ...` or ensure a virtual displa
 
 ---
 
-*Last updated: 2026-04-08*
+*Last updated: 2026-04-12*

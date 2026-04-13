@@ -164,11 +164,13 @@ class CopilotPanel(QtWidgets.QDockWidget):
         if self._adapter is not None:
             self._status_label.setText("Ready")
             self._status_label.setStyleSheet("color: #666; font-style: italic;")
+            self._status_label.setToolTip("")
         else:
             # No adapter, show error if any
             if self._adapter_error is None:
                 self._status_label.setText("No LLM adapter configured")
                 self._status_label.setStyleSheet("color: #666; font-style: italic;")
+                self._status_label.setToolTip("")
             else:
                 # Determine user-friendly message
                 err = self._adapter_error
@@ -190,6 +192,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
                     msg = f"Adapter failed: {type(err).__name__}"
                 self._status_label.setText(f"Error: {msg}")
                 self._status_label.setStyleSheet("color: #dc2626; font-style: italic;")
+                self._status_label.setToolTip(str(err))
 
     def set_adapter(self, adapter):
         """Set adapter directly (e.g., from Use once session)."""

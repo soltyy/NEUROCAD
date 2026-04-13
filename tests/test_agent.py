@@ -76,7 +76,7 @@ def test_agent_callbacks_default():
 
 @patch("neurocad.core.context.capture")
 @patch("neurocad.core.agent.build_system")
-@patch("neurocad.core.agent.extract_code")
+@patch("neurocad.core.agent.extract_code_blocks")
 def test_run_success_without_callbacks(
     mock_extract, mock_build_system, mock_capture
 ):
@@ -84,7 +84,7 @@ def test_run_success_without_callbacks(
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.complete.return_value.content = "```python\nPart.makeBox(10,10,10)\n```"
-    mock_extract.return_value = "Part.makeBox(10,10,10)"
+    mock_extract.return_value = ["Part.makeBox(10,10,10)"]
     mock_build_system.return_value = "system"
     mock_capture.return_value = MagicMock()
 
@@ -113,7 +113,7 @@ def test_run_retry_on_failure(mock_build_system, mock_capture):
 
     history = History()
 
-    with patch("neurocad.core.agent.extract_code", return_value="code"), \
+    with patch("neurocad.core.agent.extract_code_blocks", return_value=["code"]), \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
             mock_exec.return_value = ExecResult(
                 ok=False,
@@ -198,6 +198,37 @@ Part.makeCylinder(5,20)
         # No retries because error category is unsupported_api
 
 
+def test_multi_step_failure_stop_semantics():
+    """When a middle block fails with unsupported_api, later blocks are not executed."""
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = """```python
+Part.makeBox(10,10,10)
+```
+```python
+Part.makeCylinder(5,20)
+```
+```python
+Part.makeSphere(15)
+```"""
+    history = History()
+
+    with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        # First call succeeds, second fails with unsupported API error
+        mock_exec.side_effect = [
+            ExecResult(ok=True, new_objects=["Box"], error=""),
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeCylinder'"),
+        ]
+        result = run("make shapes", mock_doc, mock_adapter, history)
+        assert result.ok is False
+        assert result.attempts == 1
+        # Only two executions: first success, second failure, third should not be called
+        assert mock_exec.call_count == 2
+        # Verify that the third block was not attempted (no third call)
+        # side_effect length is 2, so if third call attempted, it would raise StopIteration and test fails
+
+
 def test_run_sandbox_policy_imports_stripped():
     """Safe imports are stripped from code blocks before execution."""
     mock_doc = MagicMock()
@@ -277,7 +308,7 @@ def test_complete_with_timeout_uses_adapter_timeout():
 
 @patch("neurocad.core.context.capture")
 @patch("neurocad.core.agent.build_system")
-@patch("neurocad.core.agent.extract_code")
+@patch("neurocad.core.agent.extract_code_blocks")
 def test_run_with_callbacks_uses_complete_not_stream(
     mock_extract, mock_build_system, mock_capture
 ):
@@ -285,7 +316,7 @@ def test_run_with_callbacks_uses_complete_not_stream(
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.complete.return_value.content = "```python\nprint('ok')\n```"
-    mock_extract.return_value = "print('ok')"
+    mock_extract.return_value = ["print('ok')"]
     mock_build_system.return_value = "system"
     mock_capture.return_value = MagicMock()
     history = History()
@@ -364,7 +395,7 @@ def test_run_non_retriable_errors():
     history = History()
 
     with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
-         patch("neurocad.core.agent.extract_code", return_value="code"), \
+         patch("neurocad.core.agent.extract_code_blocks", return_value=["code"]), \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
                 # Test blocked token error
                 mock_exec.return_value = ExecResult(
@@ -444,12 +475,12 @@ def test_blocked_import_triggers_corrective_regeneration():
 
     with patch("neurocad.core.context.capture") as mock_capture, \
          patch("neurocad.core.agent.build_system") as mock_build_system, \
-         patch("neurocad.core.agent.extract_code") as mock_extract, \
+         patch("neurocad.core.agent.extract_code_blocks") as mock_extract, \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
         mock_capture.return_value = MagicMock()
         mock_build_system.return_value = "system"
         # Extract code returns the raw code (with import first, without import second)
-        mock_extract.side_effect = lambda x: x.strip("```python\n").strip("```").strip()
+        mock_extract.side_effect = lambda x: [x.strip("```python\n").strip("```").strip()]
         # First execution returns blocked token error, second succeeds
         mock_exec.side_effect = [
             ExecResult(
@@ -474,6 +505,60 @@ def test_blocked_import_triggers_corrective_regeneration():
         assert mock_adapter.complete.call_count == 2
         # Verify that the feedback included "forbidden tokens" (category blocked_token)
         # This is implicitly covered by the retry logic.
+
+
+def test_multi_step_execution_edge_cases():
+    """Regression test for edge cases: blocks separated by text, empty blocks."""
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.executor import ExecResult
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    # Simulate LLM response with three blocks separated by text, one empty block
+    raw_response = '''First some text.
+```python
+Part.makeBox(1,1,1)
+```
+More text.
+```python
+Part.makeCylinder(5,10)
+```
+Empty block:
+```python
+
+```
+Final block:
+```python
+Part.makeSphere(3)
+```'''
+    mock_adapter.complete.return_value.content = raw_response
+    history = History()
+
+    with patch("neurocad.core.context.capture") as mock_capture, \
+         patch("neurocad.core.agent.build_system") as mock_build_system, \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        mock_capture.return_value = MagicMock()
+        mock_build_system.return_value = "system"
+        # Expect three non-empty blocks (empty block filtered out)
+        mock_exec.side_effect = [
+            ExecResult(ok=True, new_objects=["Box"]),
+            ExecResult(ok=True, new_objects=["Cylinder"]),
+            ExecResult(ok=True, new_objects=["Sphere"]),
+        ]
+        result = run("create shapes", mock_doc, mock_adapter, history, callbacks=None)
+
+        assert result.ok is True
+        assert result.attempts == 1
+        assert len(result.new_objects) == 3
+        assert "Box" in result.new_objects
+        assert "Cylinder" in result.new_objects
+        assert "Sphere" in result.new_objects
+        # Verify each block executed exactly once
+        assert mock_exec.call_count == 3
+        # Verify that empty block was not passed to executor
+        # (implied by call count)
 
 
 def test_supported_case_no_forbidden_import():

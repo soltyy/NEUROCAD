@@ -660,12 +660,15 @@ def test_runtime_visible_naming(qapp):
 
 def test_panel_diagnostics_missing_key(qapp):
     """Status label shows missing key error when load_adapter raises ValueError."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     from neurocad.ui.panel import CopilotPanel
-    from neurocad.core.active_document import get_active_document
 
     with patch("neurocad.ui.panel.load_adapter") as mock_load:
-        mock_load.side_effect = ValueError("No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI environment variable or store it in the system keyring.")
+        mock_load.side_effect = ValueError(
+            "No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI "
+            "environment variable or store it in the system keyring."
+        )
         panel = CopilotPanel()
         # Force re-initialization
         panel._init_adapter()
@@ -694,6 +697,7 @@ def test_panel_diagnostics_missing_key(qapp):
 def test_panel_diagnostics_unknown_provider(qapp):
     """Status label shows unknown provider error."""
     from unittest.mock import patch
+
     from neurocad.ui.panel import CopilotPanel
 
     with patch("neurocad.ui.panel.load_adapter") as mock_load:
@@ -710,10 +714,15 @@ def test_panel_diagnostics_unknown_provider(qapp):
 def test_panel_diagnostics_keyring_unavailable(qapp):
     """Status label shows secure storage unavailable."""
     from unittest.mock import patch
+
     from neurocad.ui.panel import CopilotPanel
 
     with patch("neurocad.ui.panel.load_adapter") as mock_load:
-        mock_load.side_effect = ValueError("No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI environment variable or install the `keyring` package in the FreeCAD Python environment to store it.")
+        mock_load.side_effect = ValueError(
+            "No API key found for provider 'openai'. Set the NEUROCAD_API_KEY_OPENAI "
+            "environment variable or install the `keyring` package in the FreeCAD Python "
+            "environment to store it."
+        )
         panel = CopilotPanel()
         panel._init_adapter()
         assert panel._adapter is None
@@ -726,6 +735,7 @@ def test_panel_diagnostics_keyring_unavailable(qapp):
 def test_panel_diagnostics_adapter_init_failure(qapp):
     """Status label shows adapter initialization failure (non‑ValueError)."""
     from unittest.mock import patch
+
     from neurocad.ui.panel import CopilotPanel
 
     with patch("neurocad.ui.panel.load_adapter") as mock_load:
@@ -742,8 +752,9 @@ def test_panel_diagnostics_adapter_init_failure(qapp):
 def test_panel_diagnostics_no_error_ready_status(qapp):
     """Status label shows Ready when adapter loads successfully."""
     from unittest.mock import patch
-    from neurocad.ui.panel import CopilotPanel
+
     from neurocad.llm.base import LLMAdapter
+    from neurocad.ui.panel import CopilotPanel
 
     mock_adapter = MagicMock(spec=LLMAdapter)
     with patch("neurocad.ui.panel.load_adapter", return_value=mock_adapter):
