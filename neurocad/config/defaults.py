@@ -45,15 +45,19 @@
 # Sandbox
 # ---------------------------------------------------------------------------
 
-# MVP: только Part. PartDesign / Sketcher / Draft / Mesh — post-MVP.
+# Part + PartDesign + Draft + Mesh разрешены. Sketcher — вне скоупа (требует GUI).
 # Соответствует ARCH.md → config/defaults.py → SANDBOX_WHITELIST.
 SANDBOX_WHITELIST: set[str] = {
     "FreeCAD",
     "App",
     "Base",
     "Part",
+    "PartDesign",
+    "Draft",
+    "Mesh",
     "math",
     "json",
+    "random",
 }
 
 # ---------------------------------------------------------------------------
@@ -70,9 +74,9 @@ comments, no import statements. Comments (#) are allowed.
 
 ## Available namespace
 The following names are pre-loaded; do NOT import them:
-  FreeCAD, App, Base, Part, math, json, doc
+  FreeCAD, App, Base, Part, PartDesign, Draft, Mesh, math, json, random, doc
 
-Do NOT use FreeCADGui, PartDesign, Sketcher, Draft, Mesh, or any other workbench.
+Do NOT use FreeCADGui or Sketcher.
 Always finish with doc.recompute() when geometry is created or modified.
 
 ## Placement conventions
@@ -144,6 +148,67 @@ wdg.Xmax  = 50;  wdg.Ymax  = 20;  wdg.Zmax  = 30
 wdg.X2min = 10;  wdg.Z2min = 5    # top face starts inset
 wdg.X2max = 40;  wdg.Z2max = 25   # top face ends inset
 wdg.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), FreeCAD.Rotation(0, 0, 0))
+doc.recompute()
+
+### Helix
+helix = Part.makeHelix(3.0, 70.0, 12.0)   # pitch=3mm, height=70mm, radius=12mm → Wire
+
+### Pipe sweep (thread, coil, spring)
+# makePipeShell is called on the Wire PATH, NOT on a Face.
+helix = Part.makeHelix(3.0, 70.0, 12.0)
+# Triangular thread profile in the XZ plane at radius r
+r = 12.0
+p = 3.0
+profile_pts = [
+    FreeCAD.Vector(r - p * 0.5, 0, 0),
+    FreeCAD.Vector(r + p * 0.5, 0, 0),
+    FreeCAD.Vector(r,           0, p * 0.5),
+    FreeCAD.Vector(r - p * 0.5, 0, 0),
+]
+profile_wire = Part.makePolygon(profile_pts)
+thread_shape = helix.makePipeShell([profile_wire], makeSolid=True, isFrenet=True)
+thread_feat = doc.addObject("Part::Feature", "ThreadShape")
+thread_feat.Shape = thread_shape
+doc.recompute()
+
+### Bolt (hex bolt approximation — solid shaft + hex head + fuse)
+# Shaft: solid cylinder (Part::Cylinder is ALWAYS a solid, never hollow)
+bolt_shaft = doc.addObject("Part::Cylinder", "BoltShaft")
+bolt_shaft.Radius = 12.0    # M24 → r = 24/2
+bolt_shaft.Height = 100.0
+bolt_shaft.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), FreeCAD.Rotation(0, 0, 0))
+doc.recompute()
+# Head: hexagonal prism (Part::Prism)
+bolt_head = doc.addObject("Part::Prism", "BoltHead")
+bolt_head.Polygon = 6
+bolt_head.Circumradius = 18.0   # M24: wrench size 36mm → circumradius 18mm
+bolt_head.Height = 15.0
+bolt_head.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 100), FreeCAD.Rotation(0, 0, 0))
+doc.recompute()
+# Fuse into one solid — ALWAYS fuse, never leave shaft and head as separate objects
+bolt = doc.addObject("Part::Fuse", "Bolt_M24")
+bolt.Base = bolt_shaft
+bolt.Tool = bolt_head
+bolt_shaft.Visibility = False
+bolt_head.Visibility = False
+doc.recompute()
+
+### Gear (involute gear via PartDesign::InvoluteGear)
+# ALWAYS use PartDesign::InvoluteGear for gears; do NOT approximate with primitives.
+# PartDesign::InvoluteGear creates a 2D wire profile; extrude it with Part::Extrusion.
+# The executor pre-loads the InvoluteGearFeature proxy automatically.
+gear_profile = doc.addObject("PartDesign::InvoluteGear", "GearProfile")
+gear_profile.NumberOfTeeth = 24
+gear_profile.Modules = 2.5         # module = pitch_diameter / teeth
+gear_profile.PressureAngle = 20    # standard 20° pressure angle
+gear_profile.HighPrecision = True
+doc.recompute()
+gear = doc.addObject("Part::Extrusion", "Gear")
+gear.Base = gear_profile
+gear.Dir = FreeCAD.Vector(0, 0, 1)
+gear.LengthFwd = 20.0              # gear face width
+gear.Solid = True
+gear_profile.Visibility = False
 doc.recompute()
 
 ## Boolean operations
@@ -302,6 +367,22 @@ cyl.Placement = FreeCAD.Placement(
 )
 doc.recompute()
 
+## TopoShape transform (non-parametric shapes — Part.Wire, Part.Face, Part.Solid, etc.)
+# Document objects use .Placement; raw TopoShapes use matrix methods.
+# NEVER call .transform() — it does NOT exist. Use:
+#   shape.transformShape(matrix)        — modifies shape in-place, returns None
+#   new_shape = shape.transformed(matrix) — returns a new transformed copy
+
+# Example: rotate a Wire copy 30° around Z
+m = FreeCAD.Matrix()
+m.rotateZ(math.radians(30))
+rotated_wire = original_wire.transformed(m)
+
+# Example: translate a shape
+m2 = FreeCAD.Matrix()
+m2.move(FreeCAD.Vector(10, 0, 0))
+shifted = some_shape.transformed(m2)
+
 ## Shape-based (non-parametric) approach
 # Part.makeBox / makeCylinder etc. return raw TopoShapes — not document objects.
 # They don't appear in the model tree and are invisible to rollback.
@@ -312,13 +393,13 @@ doc.recompute()
 # Prefer parametric doc.addObject("Part::Box", ...) whenever possible.
 
 ## Out-of-scope — do NOT attempt
-# PartDesign features (Pad, Pocket, PartDesign::Fillet/Chamfer)
 # Sketcher constraints
-# Draft workbench tools
-# Mesh operations
 # import / from statements, __import__, eval, exec, os, sys, subprocess, open
 # FreeCADGui calls
-# Part.makeGear, makeInvoluteGear, or any undocumented Part.make* method
+# Part.makeGear, makeInvoluteGear — use PartDesign::InvoluteGear instead
+# makePipeShell on a Part.Face — it belongs to Part.Wire (the path), not to a Face
+# Manual gear tooth approximations (triangular prisms, polygon loops) — use PartDesign::InvoluteGear
+# Part.Shape.transform() — use transformShape(matrix) or transformed(matrix) instead
 
 If the user asks for an operation outside these capabilities, explain that it is \
 outside MVP scope and suggest the closest available alternative \

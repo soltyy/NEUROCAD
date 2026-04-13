@@ -155,6 +155,26 @@ def test_executor_logs_unsupported_api():
             )
 
 
+def test_execute_random_available():
+    """execute can use random module."""
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.executor import execute, _build_namespace
+
+    mock_doc = MagicMock()
+    mock_doc.Objects = []
+
+    # Build real namespace (includes random)
+    namespace = _build_namespace(mock_doc)
+    assert "random" in namespace
+
+    # Patch exec to simulate successful execution
+    with patch("neurocad.core.executor.exec"):
+        result = execute("x = random.random()", mock_doc)
+        # Should succeed because random is in namespace
+        assert result.ok is True
+        assert result.error is None
+
+
 def test_build_namespace_includes_math():
     """_build_namespace includes math module."""
     mock_doc = MagicMock()
@@ -164,9 +184,26 @@ def test_build_namespace_includes_math():
     assert namespace["math"] is math
 
 
+def test_build_namespace_includes_random():
+    """_build_namespace includes random module."""
+    mock_doc = MagicMock()
+    namespace = _build_namespace(mock_doc)
+    assert "random" in namespace
+    import random
+    assert namespace["random"] is random
+
+
 def test_import_math_blocked():
     """import math is blocked by tokenizer."""
     code = "import math"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'import'" in error
+
+
+def test_import_random_blocked():
+    """import random is blocked by tokenizer."""
+    code = "import random"
     error = _pre_check(code)
     assert error is not None
     assert "Blocked token 'import'" in error

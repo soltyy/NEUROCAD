@@ -47,6 +47,15 @@ def _build_namespace(doc):
     import PartDesign  # type: ignore
     import Sketcher  # type: ignore
     import math  # type: ignore
+    import random  # type: ignore
+
+    # Load InvoluteGearFeature so its Python proxy class is registered.
+    # Without this, doc.addObject("PartDesign::InvoluteGear", ...) produces a
+    # bare C++ object that cannot compute its shape (state: Touched/Invalid).
+    try:
+        import InvoluteGearFeature  # type: ignore  # noqa: F401
+    except (ImportError, Exception):
+        pass
 
     # Provide the active document as a convenience variable
     namespace = {
@@ -59,6 +68,7 @@ def _build_namespace(doc):
         "doc": doc,
         "App": FreeCAD,  # alias
         "math": math,
+        "random": random,
     }
     return namespace
 

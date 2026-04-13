@@ -9,7 +9,7 @@ from neurocad.config.defaults import REFUSAL_KEYWORDS
 
 from .audit import audit_log, get_correlation_id
 from .code_extractor import extract_code_blocks
-from .debug import log_error, log_info, log_warn
+from .debug import log_error, log_info, log_notify, log_warn
 from .executor import ExecResult, execute
 from .history import History, Role
 from .prompt import build_system
@@ -76,7 +76,7 @@ def _make_feedback(error: str, category: str) -> str:
     """Return a concise user-facing feedback message."""
     if category == "blocked_token":
         if "'import'" in error.lower():
-            return "The code contains an import statement. The math module is already pre‑loaded; use math.cos(), math.sin(), math.pi etc. directly without importing."
+            return "The code contains an import statement. The math and random modules are already pre‑loaded; use math.cos(), math.sin(), math.pi, random.random() etc. directly without importing."
         return "The code contains forbidden tokens (e.g., import, FreeCADGui). Remove them."
     if category == "unsupported_api":
         error_lower = error.lower()
@@ -86,9 +86,27 @@ def _make_feedback(error: str, category: str) -> str:
                 "FreeCAD modules have no math functions. Use `math.cos()`, `math.sin()` etc. — "
                 "`math` is pre‑loaded in the namespace."
             )
+        if "makepipeshell" in error_lower:
+            return (
+                "makePipeShell must be called on a Wire (the path), not on a Face. "
+                "Correct pattern: helix = Part.makeHelix(pitch, height, radius); "
+                "profile = Part.Wire([Part.makeCircle(r, center, normal)]); "
+                "shape = helix.makePipeShell([profile], makeSolid=True, isFrenet=True); "
+                "feat = doc.addObject('Part::Feature', 'Name'); feat.Shape = shape; doc.recompute()"
+            )
+        if "has no attribute 'transform'" in error_lower:
+            return (
+                "Part.Shape has no .transform() method. "
+                "Use shape.transformShape(matrix) to modify in-place, or "
+                "new_shape = shape.transformed(matrix) to get a copy. "
+                "Build a rotation matrix with: m = FreeCAD.Matrix(); m.rotateZ(angle_rad). "
+                "Alternatively compute rotated coordinates directly with math.cos/sin."
+            )
         return (
-            "Unsupported FreeCAD API used. Use only supported primitives: "
-            "makeBox, makeCylinder, makeSphere, makeCone."
+            "Unsupported FreeCAD API used. Available: Part primitives (makeBox, makeCylinder, "
+            "makeSphere, makeCone, makeHelix, makePolygon, makeCircle), "
+            "wire.makePipeShell(), Part::Feature for raw shapes, "
+            "PartDesign::InvoluteGear for gears."
         )
     if category == "validation":
         return f"Validation failed: {error}"
@@ -206,6 +224,7 @@ def run(
     # Add user message to history
     history.add(Role.USER, text)
     log_info("agent.run", "history updated with user prompt", text=text)
+    log_notify("history updated")
     callbacks.on_status("history updated")
     # Audit log
     audit_log(
@@ -222,6 +241,7 @@ def run(
     # Early refusal for file/import/external-resource intents
     if _contains_refusal_intent(text):
         log_info("agent.run", "early refusal for file/import/external-resource intent", text=text)
+        log_notify("unsupported file/import/external-resource operation")
         callbacks.on_status("unsupported file/import/external-resource operation")
         # Audit log
         audit_log(
@@ -260,6 +280,7 @@ def run(
         system_chars=len(system),
         object_count=len(snap.objects),
     )
+    log_notify("system prompt ready", objects=len(snap.objects))
     callbacks.on_status(f"system prompt ready, objects={len(snap.objects)}")
 
     MAX_RETRIES = 3
@@ -462,36 +483,8 @@ def run(
                 category=category,
             )
             callbacks.on_status(f"execution failed: {feedback}")
-            # Retry loop continues unless error is non-retriable
-            if category == "unsupported_api" or category == "blocked_token":
-                # Audit log
-                audit_log(
-                    "agent_error",
-                    {
-                        "error_type": "execution_error",
-                        "error_category": category,
-                        "user_prompt_preview": text[:500],
-                        "llm_response_preview": llm_text[:500],
-                        "code_preview": (blocks[0] if blocks else "")[:500],
-                        "provider": getattr(adapter, "provider", type(adapter).__name__),
-                        "model": getattr(adapter, "model", "unknown"),
-                        "document_name": getattr(doc, "Name", None),
-                        "attempts": attempts,
-                        "block_count": len(blocks),
-                        "error": last_error,
-                        "feedback": feedback,
-                        "rollback_count": total_rollback_count,
-                    },
-                    correlation_id=get_correlation_id(),
-                )
-                return AgentResult(
-                    ok=False,
-                    attempts=attempts,
-                    error=feedback,
-                    new_objects=[],
-                    rollback_count=total_rollback_count,
-                )
-            # otherwise loop continues
+            # Retry loop continues — blocked_token and unsupported_api are
+            # self-correctable: feedback is already in history, LLM can fix on next attempt.
 
     # All retries exhausted
     error_msg = f"Max retries exceeded: {last_error}" if last_error else "Max retries exceeded"

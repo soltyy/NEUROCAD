@@ -173,7 +173,7 @@ Part.makeCylinder(5,20)
 
 
 def test_run_multi_block_stop_on_failure():
-    """Execution stops at first failing block (unsupported API error)."""
+    """Within one attempt execution stops at first failing block; agent retries up to MAX_RETRIES."""
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.complete.return_value.content = """```python
@@ -186,20 +186,20 @@ Part.makeCylinder(5,20)
 
     with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
-        # First call fails with unsupported API error (non‑retriable)
+        # Block 1 fails each attempt — block 2 should never be executed within an attempt
         mock_exec.side_effect = [
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeBox'"),
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeBox'"),
             ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeBox'"),
         ]
         result = run("make shapes", mock_doc, mock_adapter, history)
         assert result.ok is False
-        assert result.attempts == 1
-        assert mock_exec.call_count == 1
-        # Second block should not have been executed
-        # No retries because error category is unsupported_api
+        assert result.attempts == 3  # retries exhaust MAX_RETRIES
+        assert mock_exec.call_count == 3  # one exec per attempt, stops at block 1 each time
 
 
 def test_multi_step_failure_stop_semantics():
-    """When a middle block fails with unsupported_api, later blocks are not executed."""
+    """When a middle block fails, later blocks in that attempt are not executed; agent retries."""
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.complete.return_value.content = """```python
@@ -215,18 +215,20 @@ Part.makeSphere(15)
 
     with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
-        # First call succeeds, second fails with unsupported API error
+        # Each attempt: block 1 succeeds, block 2 fails → block 3 never executed
+        # 3 attempts × 2 execs = 6 total calls
         mock_exec.side_effect = [
-            ExecResult(ok=True, new_objects=["Box"], error=""),
+            ExecResult(ok=True, new_objects=["Box"]),
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeCylinder'"),
+            ExecResult(ok=True, new_objects=["Box"]),
+            ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeCylinder'"),
+            ExecResult(ok=True, new_objects=["Box"]),
             ExecResult(ok=False, new_objects=[], error="module 'Part' has no attribute 'makeCylinder'"),
         ]
         result = run("make shapes", mock_doc, mock_adapter, history)
         assert result.ok is False
-        assert result.attempts == 1
-        # Only two executions: first success, second failure, third should not be called
-        assert mock_exec.call_count == 2
-        # Verify that the third block was not attempted (no third call)
-        # side_effect length is 2, so if third call attempted, it would raise StopIteration and test fails
+        assert result.attempts == 3
+        assert mock_exec.call_count == 6  # 2 blocks per attempt × 3 attempts
 
 
 def test_run_sandbox_policy_imports_stripped():
@@ -346,9 +348,8 @@ def test_build_system_includes_snapshot():
         result = build_system(mock_snap)
         mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1000)
         assert "Snapshot description" in result
-        assert "Supported Part primitives" in result
-        # After Sprint 5.5: math module is pre‑loaded, import not needed
-        assert "The math module is already pre‑loaded" in result
+        assert "makeCylinder" in result
+        assert "do NOT import them" in result
 
 
 def test_error_categorization():
@@ -382,8 +383,8 @@ def test_make_feedback():
     assert "Execution failed" in _make_feedback("error", "runtime")
 
 
-def test_run_non_retriable_errors():
-    """blocked_token and unsupported_api errors stop after first attempt."""
+def test_run_retriable_errors_exhaust_retries():
+    """blocked_token and unsupported_api are retriable — agent exhausts MAX_RETRIES."""
     from unittest.mock import MagicMock, patch
 
     from neurocad.core.agent import run
@@ -398,30 +399,29 @@ def test_run_non_retriable_errors():
     with patch("neurocad.core.context.capture"), patch("neurocad.core.agent.build_system"), \
          patch("neurocad.core.agent.extract_code_blocks", return_value=["code"]), \
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
-                # Test blocked token error
-                mock_exec.return_value = ExecResult(
-                    ok=False,
-                    new_objects=[],
-                    error="Blocked token 'FreeCADGui' found at line 1",
-                )
-                result = run("make a box", mock_doc, mock_adapter, history)
-                assert result.ok is False
-                assert result.attempts == 1
-                assert "forbidden tokens" in result.error
-                assert mock_exec.call_count == 1
-                # Reset for unsupported API error
-                mock_exec.reset_mock()
-                mock_exec.return_value = ExecResult(
-                    ok=False,
-                    new_objects=[],
-                    error="module 'Part' has no attribute 'makeGear'",
-                )
-                history.clear()
-                result2 = run("make a gear", mock_doc, mock_adapter, history)
-                assert result2.ok is False
-                assert result2.attempts == 1
-                assert "Unsupported FreeCAD API" in result2.error
-                assert mock_exec.call_count == 1
+        # blocked_token: LLM keeps failing → exhausts 3 retries
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="Blocked token 'FreeCADGui' found at line 1",
+        )
+        result = run("make a box", mock_doc, mock_adapter, history)
+        assert result.ok is False
+        assert result.attempts == 3
+        assert mock_exec.call_count == 3
+
+        # unsupported_api: same — exhausts 3 retries
+        mock_exec.reset_mock()
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="module 'Part' has no attribute 'makeGear'",
+        )
+        history.clear()
+        result2 = run("make a gear", mock_doc, mock_adapter, history)
+        assert result2.ok is False
+        assert result2.attempts == 3
+        assert mock_exec.call_count == 3
 
 
 def test_run_early_refusal():
@@ -458,7 +458,7 @@ def test_contains_refusal_intent():
 
 
 def test_blocked_import_triggers_corrective_regeneration():
-    """Blocked import error should cause fast‑fail (no retry) with appropriate feedback."""
+    """Blocked import error adds corrective feedback and retries up to MAX_RETRIES."""
     from unittest.mock import MagicMock, patch
     from neurocad.core.agent import run
     from neurocad.core.executor import ExecResult
@@ -483,16 +483,12 @@ def test_blocked_import_triggers_corrective_regeneration():
         )
         result = run("make a box", mock_doc, mock_adapter, history)
 
-        # Should fail after first attempt, no retry
         assert result.ok is False
-        assert result.attempts == 1
-        # Feedback should mention import and pre‑loaded math
+        assert result.attempts == 3          # retries exhaust MAX_RETRIES
+        # result.error carries the raw last error; feedback content is in history
         assert "import" in result.error.lower()
-        assert "math" in result.error.lower()
-        # Adapter called only once
-        assert mock_adapter.complete.call_count == 1
-        # Executor called only once
-        assert mock_exec.call_count == 1
+        assert mock_adapter.complete.call_count == 3
+        assert mock_exec.call_count == 3
 
 
 def test_multi_step_execution_edge_cases():
@@ -550,22 +546,24 @@ Part.makeSphere(3)
 
 
 def test_supported_case_no_forbidden_import():
-    """Regression test: supported prompt contract forbids imports and lists supported primitives."""
+    """Regression test: supported prompt contract forbids imports and lists available modules."""
     from neurocad.core.context import DocSnapshot
     from neurocad.core.prompt import build_system
 
-    # Minimal snapshot for a supported case
     snap = DocSnapshot(filename="test.FCStd", objects=[])
     system = build_system(snap)
 
-    # Required contract assertions (NC-DEV-CORE-013A)
-    assert "Do not use any import statements." in system
-    # After Sprint 5.5: math module is pre‑loaded, import not needed
-    assert "The math module is already pre‑loaded" in system
-    assert "Supported Part primitives" in system
+    # Imports are forbidden — prompt must say so
+    assert "no import statements" in system or "do NOT import" in system
+    # PartDesign now in scope
+    assert "PartDesign" in system
+    # Core primitives still documented
     assert "makeCylinder" in system
-    # Ensure the prompt does not contain refusal keywords (they are in REFUSAL_KEYWORDS)
-    # This is a sanity check that the prompt is appropriate for supported cases.
+    assert "Part::Cylinder" in system
+    # Gear support via PartDesign::InvoluteGear
+    assert "InvoluteGear" in system
+    # Thread / helix support
+    assert "makeHelix" in system
 
 
 def test_error_categorization_freecad_math():
@@ -585,6 +583,10 @@ def test_error_categorization_freecad_math():
         err = f"module '{mod}' has no attribute 'sqrt'"
         assert _categorize_error(err) == "unsupported_api"
 
+    # Random missing attribute (should also be unsupported_api)
+    err = "module 'FreeCAD' has no attribute 'random'"
+    assert _categorize_error(err) == "unsupported_api"
+
 
 def test_make_feedback_math_hint():
     """_make_feedback includes hint about math module for missing math functions."""
@@ -603,8 +605,8 @@ def test_make_feedback_math_hint():
     assert "math.cos()" not in feedback
     
     
-def test_unsupported_api_math_fast_fail():
-    """Error 'module FreeCAD has no attribute cos' should be categorized as unsupported_api and cause fast‑fail."""
+def test_unsupported_api_math_retries():
+    """Error 'module FreeCAD has no attribute cos' is unsupported_api — retries with math hint."""
     from unittest.mock import MagicMock, patch
     from neurocad.core.agent import run
     from neurocad.core.executor import ExecResult
@@ -629,15 +631,12 @@ def test_unsupported_api_math_fast_fail():
         )
         result = run("calculate cosine", mock_doc, mock_adapter, history)
 
-        # Should fail after first attempt, no retry
         assert result.ok is False
-        assert result.attempts == 1
-        # Error should be categorized as unsupported_api, feedback should mention math
-        assert "unsupported" in result.error.lower() or "math" in result.error.lower()
-        # Adapter called only once
-        assert mock_adapter.complete.call_count == 1
-        # Executor called only once
-        assert mock_exec.call_count == 1
+        assert result.attempts == 3          # retries exhaust MAX_RETRIES
+        # result.error carries the raw last error; math hint is in history as feedback
+        assert "freecad" in result.error.lower() or "cos" in result.error.lower()
+        assert mock_adapter.complete.call_count == 3
+        assert mock_exec.call_count == 3
 
 
 if __name__ == "__main__":
