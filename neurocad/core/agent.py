@@ -46,7 +46,8 @@ def _categorize_error(error: str) -> str:
     error_lower = error.lower()
     if "blocked token" in error_lower:
         return "blocked_token"
-    if "module 'part' has no attribute" in error_lower or "has no attribute 'make" in error_lower:
+    unsupported_modules = ["part", "freecad", "app", "mesh", "draft", "sketcher", "partdesign"]
+    if any(f"module '{mod}' has no attribute" in error_lower for mod in unsupported_modules) or "has no attribute 'make" in error_lower:
         return "unsupported_api"
     if "validation failed" in error_lower:
         return "validation"
@@ -74,8 +75,17 @@ def _is_blocked_import(error: str) -> bool:
 def _make_feedback(error: str, category: str) -> str:
     """Return a concise user-facing feedback message."""
     if category == "blocked_token":
+        if "'import'" in error.lower():
+            return "The code contains an import statement. The math module is already pre‑loaded; use math.cos(), math.sin(), math.pi etc. directly without importing."
         return "The code contains forbidden tokens (e.g., import, FreeCADGui). Remove them."
     if category == "unsupported_api":
+        error_lower = error.lower()
+        math_keywords = ["cos", "sin", "tan", "sqrt", "pi", "atan"]
+        if any(kw in error_lower for kw in math_keywords):
+            return (
+                "FreeCAD modules have no math functions. Use `math.cos()`, `math.sin()` etc. — "
+                "`math` is pre‑loaded in the namespace."
+            )
         return (
             "Unsupported FreeCAD API used. Use only supported primitives: "
             "makeBox, makeCylinder, makeSphere, makeCone."
@@ -453,9 +463,7 @@ def run(
             )
             callbacks.on_status(f"execution failed: {feedback}")
             # Retry loop continues unless error is non-retriable
-            if category == "unsupported_api" or (
-                category == "blocked_token" and not _is_blocked_import(last_error)
-            ):
+            if category == "unsupported_api" or category == "blocked_token":
                 # Audit log
                 audit_log(
                     "agent_error",

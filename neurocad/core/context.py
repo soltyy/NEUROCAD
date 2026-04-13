@@ -12,6 +12,7 @@ class ObjectInfo:
     volume_mm3: float | None = None
     placement: str | None = None
     visible: bool = True
+    properties: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,6 +96,19 @@ def capture(doc) -> DocSnapshot:
 
         visible = bool(getattr(obj, "Visibility", True))
 
+        # Collect geometric properties
+        props = {}
+        geometric_attrs = ["Length", "Width", "Height", "Radius", "Radius1", "Radius2",
+                           "Angle", "Pitch", "FirstAngle", "SecondAngle"]
+        for attr in geometric_attrs:
+            if hasattr(obj, attr):
+                try:
+                    val = getattr(obj, attr)
+                    if isinstance(val, (int, float)):
+                        props[attr] = round(float(val), 2)
+                except Exception:
+                    pass
+
         objects.append(ObjectInfo(
             name=obj.Name,
             type_id=obj.TypeId,
@@ -102,6 +116,7 @@ def capture(doc) -> DocSnapshot:
             volume_mm3=volume_mm3,
             placement=placement,
             visible=visible,
+            properties=props,
         ))
 
     active = doc.ActiveObject.Name if hasattr(doc, "ActiveObject") and doc.ActiveObject else None
@@ -131,6 +146,9 @@ def to_prompt_str(snap: DocSnapshot, max_chars: int = 2000) -> str:
                 line += f" vol={obj.volume_mm3:.1f} mm³"
             if obj.placement:
                 line += f" placement={obj.placement}"
+            if obj.properties:
+                prop_str = " ".join(f"{k}={v:.2f}" for k, v in sorted(obj.properties.items()))
+                line += f" props={prop_str}"
             if not obj.visible:
                 line += " (hidden)"
             lines.append(line)

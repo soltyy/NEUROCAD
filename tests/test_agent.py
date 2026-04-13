@@ -347,7 +347,8 @@ def test_build_system_includes_snapshot():
         mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1000)
         assert "Snapshot description" in result
         assert "Supported Part primitives" in result
-        assert "Do not import the math module" in result
+        # After Sprint 5.5: math module is pre‑loaded, import not needed
+        assert "The math module is already pre‑loaded" in result
 
 
 def test_error_categorization():
@@ -457,7 +458,7 @@ def test_contains_refusal_intent():
 
 
 def test_blocked_import_triggers_corrective_regeneration():
-    """Blocked import error should trigger corrective regeneration and not be final user-visible failure."""
+    """Blocked import error should cause fast‑fail (no retry) with appropriate feedback."""
     from unittest.mock import MagicMock, patch
     from neurocad.core.agent import run
     from neurocad.core.executor import ExecResult
@@ -465,12 +466,7 @@ def test_blocked_import_triggers_corrective_regeneration():
 
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
-    # First response contains import statement, triggering blocked_token error
-    # Second response is valid code without import
-    mock_adapter.complete.side_effect = [
-        MagicMock(content="```python\nimport math\nPart.makeBox(10,10,10)\n```"),
-        MagicMock(content="```python\nPart.makeBox(10,10,10)\n```"),
-    ]
+    mock_adapter.complete.return_value.content = "```python\nimport math\nPart.makeBox(10,10,10)\n```"
     history = History()
 
     with patch("neurocad.core.context.capture") as mock_capture, \
@@ -479,32 +475,24 @@ def test_blocked_import_triggers_corrective_regeneration():
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
         mock_capture.return_value = MagicMock()
         mock_build_system.return_value = "system"
-        # Extract code returns the raw code (with import first, without import second)
-        mock_extract.side_effect = lambda x: [x.strip("```python\n").strip("```").strip()]
-        # First execution returns blocked token error, second succeeds
-        mock_exec.side_effect = [
-            ExecResult(
-                ok=False,
-                new_objects=[],
-                error="Blocked token 'import' found at line 1",
-            ),
-            ExecResult(
-                ok=True,
-                new_objects=["Box"],
-            ),
-        ]
+        mock_extract.return_value = ["import math\nPart.makeBox(10,10,10)"]
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="Blocked token 'import' found at line 1",
+        )
         result = run("make a box", mock_doc, mock_adapter, history)
 
-        # Should have attempted twice (first blocked import, then success)
-        assert result.attempts == 2
-        assert result.ok is True
-        assert "Box" in result.new_objects
-        # Ensure the final error is not a blocked_token error
-        assert "Blocked token" not in (result.error or "")
-        # Verify adapter.complete called twice
-        assert mock_adapter.complete.call_count == 2
-        # Verify that the feedback included "forbidden tokens" (category blocked_token)
-        # This is implicitly covered by the retry logic.
+        # Should fail after first attempt, no retry
+        assert result.ok is False
+        assert result.attempts == 1
+        # Feedback should mention import and pre‑loaded math
+        assert "import" in result.error.lower()
+        assert "math" in result.error.lower()
+        # Adapter called only once
+        assert mock_adapter.complete.call_count == 1
+        # Executor called only once
+        assert mock_exec.call_count == 1
 
 
 def test_multi_step_execution_edge_cases():
@@ -572,11 +560,84 @@ def test_supported_case_no_forbidden_import():
 
     # Required contract assertions (NC-DEV-CORE-013A)
     assert "Do not use any import statements." in system
-    assert "Do not import the math module." in system
+    # After Sprint 5.5: math module is pre‑loaded, import not needed
+    assert "The math module is already pre‑loaded" in system
     assert "Supported Part primitives" in system
     assert "makeCylinder" in system
     # Ensure the prompt does not contain refusal keywords (they are in REFUSAL_KEYWORDS)
     # This is a sanity check that the prompt is appropriate for supported cases.
+
+
+def test_error_categorization_freecad_math():
+    """_categorize_error classifies missing math functions as unsupported_api."""
+    from neurocad.core.agent import _categorize_error
+    # FreeCAD missing attribute
+    err = "module 'FreeCAD' has no attribute 'cos'"
+    assert _categorize_error(err) == "unsupported_api"
+    # App missing attribute
+    err = "module 'App' has no attribute 'sin'"
+    assert _categorize_error(err) == "unsupported_api"
+    # Part missing attribute (already covered)
+    err = "module 'Part' has no attribute 'tan'"
+    assert _categorize_error(err) == "unsupported_api"
+    # Mesh, Draft, Sketcher, PartDesign
+    for mod in ["Mesh", "Draft", "Sketcher", "PartDesign"]:
+        err = f"module '{mod}' has no attribute 'sqrt'"
+        assert _categorize_error(err) == "unsupported_api"
+
+
+def test_make_feedback_math_hint():
+    """_make_feedback includes hint about math module for missing math functions."""
+    from neurocad.core.agent import _make_feedback
+    # error containing cos
+    feedback = _make_feedback("module 'FreeCAD' has no attribute 'cos'", "unsupported_api")
+    assert "FreeCAD modules have no math functions" in feedback
+    assert "math.cos()" in feedback
+    assert "math.sin()" in feedback
+    # error containing sin
+    feedback = _make_feedback("module 'Part' has no attribute 'sin'", "unsupported_api")
+    assert "FreeCAD modules have no math functions" in feedback
+    # error not containing math keyword -> generic unsupported API message
+    feedback = _make_feedback("module 'Part' has no attribute 'makeGear'", "unsupported_api")
+    assert "Unsupported FreeCAD API used" in feedback
+    assert "math.cos()" not in feedback
+    
+    
+def test_unsupported_api_math_fast_fail():
+    """Error 'module FreeCAD has no attribute cos' should be categorized as unsupported_api and cause fast‑fail."""
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.executor import ExecResult
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = "```python\nFreeCAD.cos(0)\n```"
+    history = History()
+
+    with patch("neurocad.core.context.capture") as mock_capture, \
+         patch("neurocad.core.agent.build_system") as mock_build_system, \
+         patch("neurocad.core.agent.extract_code_blocks") as mock_extract, \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
+        mock_capture.return_value = MagicMock()
+        mock_build_system.return_value = "system"
+        mock_extract.return_value = ["FreeCAD.cos(0)"]
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="module 'FreeCAD' has no attribute 'cos'",
+        )
+        result = run("calculate cosine", mock_doc, mock_adapter, history)
+
+        # Should fail after first attempt, no retry
+        assert result.ok is False
+        assert result.attempts == 1
+        # Error should be categorized as unsupported_api, feedback should mention math
+        assert "unsupported" in result.error.lower() or "math" in result.error.lower()
+        # Adapter called only once
+        assert mock_adapter.complete.call_count == 1
+        # Executor called only once
+        assert mock_exec.call_count == 1
 
 
 if __name__ == "__main__":

@@ -35,4 +35,38 @@ No special rollback needed beyond reverting the code changes. If you have change
 
 ---
 
+# Release Notes – Sprint 5.5 (Math Namespace, Geometry Context, Placement Grounding)
+
+**Date:** 2026‑04‑13  
+**Based on:** Sprint 5.5 completion (reviewed)
+
+---
+
+## PR Summary
+Sprint 5.5 injects the `math` module into the execution namespace, enriches document snapshot with geometric dimensions, adds FreeCAD placement conventions to the system prompt, and improves error categorization for missing attributes. These changes eliminate three systematic failure classes observed in real dog‑food sessions: missing trigonometry, lack of dimensional context, and misinterpretation of Box.Placement.
+
+## User‑visible changes
+- **Math module pre‑loaded**: LLM can use `math.cos()`, `math.sin()`, `math.pi` etc. directly; no need for `import math` (which remains blocked).
+- **Geometric properties in context**: The active‑document snapshot now includes object‑specific dimensions (`Length`, `Width`, `Height`, `Radius`, `Radius1`, `Radius2`, `Angle`, `Pitch`) when available.
+- **Placement conventions clarified**: System prompt explains that `Part::Box.Placement` sets the corner (not the center) of the box, while `Cylinder`/`Cone` placement sets the center of the base circle.
+- **Better error feedback**: Missing‑attribute errors on `FreeCAD`, `App`, `Part`, `Mesh`, `Draft`, `Sketcher`, `PartDesign` modules are categorized as `unsupported_api` and receive targeted hints (e.g., “use `math.cos()` instead of `App.cos()`”).
+
+## Migration / rollout notes
+- No breaking changes; the `properties` field added to `ObjectInfo` is additive.
+- Existing prompts that already use `math` functions will now work without modification.
+- No new environment variables or configuration keys are required.
+- **None**
+
+## Rollback notes
+No special rollback needed. If a revert is required, revert the five changed files (`neurocad/core/executor.py`, `neurocad/config/defaults.py`, `neurocad/core/agent.py`, `neurocad/core/context.py`, `neurocad/core/prompt.py`).
+
+## Manual verification checklist
+- [ ] Open FreeCAD, activate NeuroCad workbench, open the chat panel.
+- [ ] Submit a prompt that uses trigonometry: `create a gear‑like pattern of 10 cylinders around a central cylinder` – verify that the geometry appears without `module 'FreeCAD' has no attribute 'cos'` errors.
+- [ ] Create a Box (`Part.makeBox(50, 50, 50)`) and a Cone (`Part.makeCone(10, 5, 20)`) with explicit placements; verify the prompt’s placement‑convention hints match the actual FreeCAD behavior.
+- [ ] Use the “Show Snapshot” button; check that the printed snapshot includes geometric properties (e.g., `props=Length=50.0 Width=50.0 Height=50.0`).
+- [ ] Submit an unsupported request that triggers a missing‑attribute error (e.g., `App.cos(0)`); verify that the error is classified as `unsupported_api` and the feedback suggests using `math.cos()`.
+
+---
+
 *These notes are intended for developers, QA, and deployment teams. For end‑user documentation, see the updated `README.md` and `DEV_SETUP.md`.*

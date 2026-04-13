@@ -1,5 +1,5 @@
 # ARCH — NeuroCad
-**Version:** v0.7 · **Date:** 2026-04-12
+**Version:** v0.8 · **Date:** 2026-04-13
 **Python 3.11 · FreeCAD 1.0+ · PySide2/PySide6 · провайдер-агностик LLM**
 
 Revision на основе: изучения FreeCAD source (deepwiki.com/FreeCAD/FreeCAD) + ghbalf/freecad-ai production паттернов.
@@ -21,6 +21,9 @@ Revision на основе: изучения FreeCAD source (deepwiki.com/FreeCA
 | Транзакция `"CADCopilot"` (расхождение в коде) | Унифицировано `"NeuroCAD"` | consistency |
 | `workbench.py` + `InitGui.py` = два файла для одного | Workbench класс и команды — прямо в `InitGui.py` | ghbalf/freecad-ai InitGui.py |
 | Input не блокируется во время выполнения | `_set_busy(True/False)` — disable input + send button | correctness |
+| LLM использует `App.cos()` / `App.sin()` (не существуют), потому что `import math` заблокирован, а prompt не предлагает рабочей альтернативы → 3 ретрая впустую | `math` pre‑injected в namespace; prompt явно указывает на pre‑loaded math; ошибки missing attribute категоризируются как `unsupported_api` | Sprint 5.5 |
+| `DocSnapshot` содержит только `volume_mm3` и `placement`, но не геометрические параметры (`Length`, `Width`, `Height`, `Radius1`, `Radius2`) → LLM угадывает размеры → лишние попытки | `ObjectInfo.properties` с L/W/H/Radius; `to_prompt_str()` выводит размеры | Sprint 5.5 |
+| System prompt не объясняет, что `Part::Box.Placement` задаёт угол бокса, а не центр → 4 хода диалога на задачу соосности | FreeCAD placement conventions добавлены в system prompt | Sprint 5.5 |
 
 ---
 

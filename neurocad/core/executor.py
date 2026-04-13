@@ -46,6 +46,7 @@ def _build_namespace(doc):
     import Part  # type: ignore
     import PartDesign  # type: ignore
     import Sketcher  # type: ignore
+    import math  # type: ignore
 
     # Provide the active document as a convenience variable
     namespace = {
@@ -57,6 +58,7 @@ def _build_namespace(doc):
         "Mesh": Mesh,
         "doc": doc,
         "App": FreeCAD,  # alias
+        "math": math,
     }
     return namespace
 

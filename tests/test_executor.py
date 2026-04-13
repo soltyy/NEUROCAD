@@ -155,5 +155,22 @@ def test_executor_logs_unsupported_api():
             )
 
 
+def test_build_namespace_includes_math():
+    """_build_namespace includes math module."""
+    mock_doc = MagicMock()
+    namespace = _build_namespace(mock_doc)
+    assert "math" in namespace
+    import math
+    assert namespace["math"] is math
+
+
+def test_import_math_blocked():
+    """import math is blocked by tokenizer."""
+    code = "import math"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'import'" in error
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

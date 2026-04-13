@@ -1,5 +1,5 @@
-# NeuroCad · Sprint Plans v0.7
-**Дата:** 2026-04-10 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
+# NeuroCad · Sprint Plans v0.8
+**Дата:** 2026-04-13 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 ## Оглавление
 
@@ -12,7 +12,10 @@
 - [Sprint 4.1 — Release Recovery + Workbench Availability](#sprint-41--release-recovery--workbench-availability)
 - [Sprint 5.1 — UI Refresh + Visual Hardening](#sprint-51--ui-refresh--visual-hardening)
 - [Sprint 5.2 — User Bubble Rendering Fix](#sprint-52--user-bubble-rendering-fix)
-- [Сводная таблица: что изменилось от v0.1 → v0.7](#сводная-таблица-что-изменилось-от-v01--v07)
+- [Sprint 5.3 — Naming Consistency](#sprint-53--naming-consistency)
+- [Sprint 5.4 — LLM Integration, Auth UX, Multi-Step Execution, and Audit Logging](#sprint-54--llm-integration-auth-ux-multi-step-execution-and-audit-logging)
+- [Sprint 5.5 — Math Namespace + Geometry Context + Placement Grounding](#sprint-55--math-namespace--geometry-context--placement-grounding)
+- [Сводная таблица: что изменилось от v0.1 → v0.8](#сводная-таблица-что-изменилось-от-v01--v08)
 
 ---
 
@@ -523,9 +526,50 @@ Sprint 3 принимается как завершённый этап **с по
 
 ---
 
-## Сводная таблица: что изменилось от v0.1 → v0.7
+# Sprint 5.5 — Math Namespace + Geometry Context + Placement Grounding
+**Нед. 15 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑13)
 
-| Компонент | v0.1 (оригинал) | v0.7 (финал) |
+**Предусловие:** Sprint 5.4 закрыт как baseline. Sprint 5.5 не меняет main-thread execution semantics, FreeCAD transaction path или threading model. Он устраняет конкретные классы провалов, зафиксированных в реальной dog-food сессии (лог 2026-04-13): провал шестерёнки из-за отсутствия тригонометрии, лишние итерации диалога из-за отсутствия размерного контекста объектов и незнания конвенции размещения Box в FreeCAD.
+
+## Цель
+
+Устранить три системных класса провалов, выявленных в реальной сессии пользователя:
+
+1. **Math namespace gap**: LLM использует `App.cos()` / `App.sin()` (не существуют), потому что `import math` заблокирован, а prompt не предлагает рабочей альтернативы → 3 ретрая впустую → `max_retries_exhausted` на задаче шестерёнки.
+2. **Context без размеров**: `DocSnapshot` содержит только `volume_mm3` и `placement`, но не геометрические параметры (`Length`, `Width`, `Height`, `Radius1`, `Radius2`) → LLM угадывает размеры → лишние попытки при позиционировании конуса на кубе, пропорциях рыбки.
+3. **Незнание конвенции Box.Placement**: system prompt не объясняет, что `Part::Box.Placement` задаёт угол бокса, а не центр → 4 хода диалога на задачу соосности куба и конуса, которая решается одним кодом при правильном контексте.
+
+Дополнительно: расширить `_categorize_error` для перехвата `module 'FreeCAD' has no attribute 'cos'` → `unsupported_api`, чтобы ошибка давала fast-fail вместо 3 одинаковых бесполезных ретраев.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-021A    / Developer / Pre-inject math into executor namespace + update prompt      / planned
+2. NC-DEV-CORE-021B    / Developer / Extend _categorize_error for module attribute errors         / planned
+3. NC-DEV-CORE-021C    / Developer / Enrich DocSnapshot with object-specific dimensions          / planned
+4. NC-DEV-CORE-021D    / Developer / Add FreeCAD placement conventions to system prompt          / planned
+5. NC-PM-REVIEW-009A   / PM        / Review Sprint 5.5 namespace + context grounding             / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-021A** | Developer | 1 | Pre-inject `math` в execution namespace и обновить prompt/defaults | `core/executor.py`, `config/defaults.py`, `tests/test_executor.py` | `math` модуль присутствует в namespace как ключ `"math"` в `_build_namespace()`; LLM-сгенерированный код `math.cos(x)`, `math.sin(x)`, `math.pi`, `math.sqrt(x)` выполняется без `import`; system prompt явно указывает, что `math` уже доступен и `import math` писать не нужно; sandbox policy остаётся: `import` по-прежнему блокируется tokenizer; тест подтверждает что `math.cos(0)` выполняется в namespace без import-строки | `TASK CODE: NC-DEV-CORE-021A` / Проблема: LLM генерирует `App.cos(t)` или `App.sin(t)` потому что prompt запрещает `import math`, а FreeCAD `App` модуль не содержит тригонометрию. Это приводит к `module 'FreeCAD' has no attribute 'cos'` и 3 бесполезным ретраям. Решение: в `neurocad/core/executor.py` в функции `_build_namespace(doc)` добавить `import math` внутри функции и включить `"math": math` в словарь namespace. Это не ослабляет sandbox: tokenizer по-прежнему блокирует слово `import` в пользовательском коде, а модуль `math` безопасен. В `neurocad/config/defaults.py` в `DEFAULT_SYSTEM_PROMPT` удалить запрещающие формулировки "Do not import the math module" и вместо них добавить явную инструкцию: `The math module is pre-loaded in the execution namespace. Use math.cos(), math.sin(), math.pi, math.sqrt(), math.atan2() etc. directly — no import statement needed or allowed.` Также убрать формулировку "Even for circular or radial patterns, do not import math" и заменить на позитивную: "For circular or radial patterns use math.cos(), math.sin(), math.pi directly." В `tests/test_executor.py` добавить regression: код `result = math.cos(0)` в namespace выполняется без ошибки; код с `import math` по-прежнему блокируется tokenizer. Не менять worker, agent, threading semantics, transaction path, sandbox policy для `import`-токена. |
+| **NC-DEV-CORE-021B** | Developer | 1 | Расширить `_categorize_error` и `_make_feedback` для ошибок атрибутов модуля FreeCAD | `core/agent.py`, `tests/test_agent.py` | Ошибки вида `module 'FreeCAD' has no attribute 'cos'`, `module 'FreeCAD' has no attribute 'sin'`, `module 'App' has no attribute 'XXX'` категоризируются как `unsupported_api`, а не `runtime`; `unsupported_api` категория не ретраивает более одного раза (текущий fast-fail contract из Sprint 2.1 сохраняется); `_make_feedback` для этих случаев возвращает конкретное сообщение: `FreeCAD (App) module has no math functions. Use math.cos(), math.sin() etc. directly — math is pre-loaded.`; regression-тест подтверждает fast-fail без 3 ретраев | `TASK CODE: NC-DEV-CORE-021B` / Проблема: `_categorize_error` в `neurocad/core/agent.py` перехватывает `module 'part' has no attribute`, но не перехватывает `module 'freecad' has no attribute 'cos'` → ошибка попадает в `runtime` категорию → 3 одинаковых бесполезных ретрая. Решение: в `_categorize_error()` добавить паттерн до блока проверки `module 'part'`: если `"has no attribute" in error_lower` и в строке ошибки присутствует одно из имён `freecad`, `app`, `part`, `mesh`, `draft`, `sketcher`, `partdesign` как модуль — вернуть `"unsupported_api"`. В `_make_feedback()` для `"unsupported_api"` расширить ответ: если в ошибке встречается `'cos'`, `'sin'`, `'tan'`, `'sqrt'`, `'pi'`, `'atan'`, добавить конкретный hint: `FreeCAD modules have no math functions. Use math.cos(), math.sin() etc. — math is pre-loaded in the namespace.` Добавить regression тесты: `_categorize_error("module 'FreeCAD' has no attribute 'cos'")` → `unsupported_api`; `_categorize_error("module 'App' has no attribute 'sin'")` → `unsupported_api`; agent с этой ошибкой завершается через `execution_error` без 3 ретраев. Не менять threading semantics, transaction path, sandbox policy или capability scope. |
+| **NC-DEV-CORE-021C** | Developer | 2 | Обогатить `DocSnapshot` геометрическими параметрами объектов | `core/context.py`, `tests/test_context.py` | `ObjectInfo` дополнен полем `properties: dict[str, float]`; `capture()` извлекает из каждого объекта доступные атрибуты из списка `("Length", "Width", "Height", "Radius", "Radius1", "Radius2", "Angle", "Pitch")`; `to_prompt_str()` выводит непустые properties компактно рядом с объектом: `L=50.0 W=50.0 H=50.0`; при отсутствии атрибута — не падает, просто пропускает; объём `max_chars=1000` для snapshot не снижается, при переполнении применяется текущая логика truncation; существующие тесты не регрессируют | `TASK CODE: NC-DEV-CORE-021C` / Проблема: `DocSnapshot` в `neurocad/core/context.py` содержит только `volume_mm3` и `placement`, но не геометрические параметры объектов (`Length`, `Width`, `Height`, `Radius1`, `Radius2` и т.д.). LLM не знает размеры существующих объектов и вынужден угадывать → лишние попытки при позиционировании и создании пропорциональных деталей. Решение: в `core/context.py` добавить поле `properties: dict[str, float] = field(default_factory=dict)` в `ObjectInfo`. В `capture()` после извлечения shape_type добавить цикл: `_GEOM_ATTRS = ("Length", "Width", "Height", "Radius", "Radius1", "Radius2", "Angle", "Pitch", "FirstAngle", "SecondAngle")`. Для каждого атрибута: `val = getattr(obj, attr, None); if val is not None: try: props[attr] = round(float(val), 2)` — c except-pass. Если `props` непустой, сохранить в `obj_info.properties`. В `to_prompt_str()` при выводе объекта: если `properties` непустой, добавить компактную строку `" props=" + " ".join(f"{k}={v}" for k, v in obj.properties.items())`. Обновить `tests/test_context.py`: mock-объект с `Length=50.0` появляется в prompt как `props=Length=50.0`; объект без геометрических атрибутов не ломает вывод. Не менять worker, agent, executor, threading semantics или sandbox policy. |
+| **NC-DEV-CORE-021D** | Developer | 2 | Добавить FreeCAD placement conventions в system prompt | `config/defaults.py`, `tests/test_agent.py` или `tests/test_executor.py` | `DEFAULT_SYSTEM_PROMPT` содержит раздел с объяснением: `Part::Box.Placement` задаёт угол (0,0,0) бокса, не центр; центр Box(L,W,H) при Placement pos=(x,y,z) находится в (x+L/2, y+W/2, z+H/2); `Part::Cylinder` и `Part::Cone` Placement задаёт центр основания; примеры правильного позиционирования конуса соосно кубу; regression тест подтверждает, что эти строки присутствуют в build_system() output | `TASK CODE: NC-DEV-CORE-021D` / Проблема: system prompt не объясняет ключевую конвенцию FreeCAD: `Part::Box.Placement` задаёт позицию угла бокса, а не его центра. LLM не знает, что центр куба 50×50×50 при pos=(0,0,0) находится в (25,25,25), а не в (0,0,0). Это приводит к многоходовым исправлениям при позиционировании (4 хода в реальной сессии). Решение: в `neurocad/config/defaults.py` в конце `DEFAULT_SYSTEM_PROMPT` добавить раздел: `FreeCAD placement conventions: Part::Box.Placement sets the position of its corner (the vertex at minimum X,Y,Z), not its center. The center of a Box with Length=L, Width=W, Height=H placed at pos=(x,y,z) is at (x+L/2, y+W/2, z+H/2). Part::Cylinder and Part::Cone Placement sets the center of the base circle. Example: to place a Cone coaxially on top of a Box(50,50,50) placed at origin, use cone.Placement = App.Placement(App.Vector(25, 25, 50), ...)`. Не менять worker, agent, executor, sandbox policy, threading semantics или capability scope. Добавить smoke-тест: `build_system(snap)` содержит строку `Box.Placement sets the position of its corner`. |
+| **NC-PM-REVIEW-009A** | PM | 3 | Проверить Sprint 5.5 как evidence-driven corrective scope | Закрытый checklist | Все 4 задачи закрыты без architectural drift; log-evidence явно соответствует каждой задаче; automated gate по изменённым файлам clean | (1) `math` pre-injected в `_build_namespace()`, доступен без `import` (2) sandbox policy: `import`-токен по-прежнему блокируется tokenizer (3) prompt указывает на pre-loaded `math` вместо запрета (4) `_categorize_error` ловит `module 'FreeCAD' has no attribute 'cos'` → `unsupported_api` (5) fast-fail без 3 ретраев для attribute errors (6) `ObjectInfo.properties` содержит L/W/H/Radius при наличии атрибутов (7) `to_prompt_str()` выводит properties компактно (8) system prompt содержит FreeCAD placement conventions (Box corner vs center) (9) build_system() output включает conventions (10) worker/agent/threading semantics не изменены (11) pytest/ruff/mypy по изменённым файлам clean |
+
+**Правила останова Sprint 5.5:** ослабление sandbox policy для `import`-токена → rejected / расширение capability scope (новые FreeCAD API, новые объектные типы) без benchmark evidence → rejected / изменение main-thread execution semantics, transaction path или threading model → rejected / добавление streaming/export/settings вне scope → стоп / ответ без TASK CODE = невалиден.
+
+---
+
+## Сводная таблица: что изменилось от v0.1 → v0.8
+
+| Компонент | v0.1 (оригинал) | v0.8 (финал) |
 |---|---|---|
 | Workbench entry | `workbench.py` отдельный файл | Всё в `InitGui.py` (ghbalf паттерн) |
 | Dock creation | `addDockWidget` в `Initialize()` | `get_panel_dock()` singleton в `panel.py` |
@@ -542,3 +586,7 @@ Sprint 3 принимается как завершённый этап **с по
 | Exporter | `exportStep(str(path))` без guard | + `Part.OCCError` catch + null shape filter |
 | Benchmark evidence | не определено | ручной FreeCAD benchmark принят как baseline; Sprint 4 переводит его в release-grade safety gate |
 | Recovery after Sprint 4 | не определено | поднят в `Sprint 4.1` как merged-scope из утраченных Sprint 5/6 + отдельный bootstrap/installability gate |
+| Math в namespace | отсутствует; prompt запрещал import | `math` pre-injected в `_build_namespace()`; prompt явно указывает на pre-loaded math (Sprint 5.5) |
+| Тригонометрия | `App.cos()` → runtime error → 3 ретрая | `math.cos()` без import → работает; `_categorize_error` ловит attribute errors → fast-fail (Sprint 5.5) |
+| Context объектов | только `volume_mm3` + `placement` | `ObjectInfo.properties` с L/W/H/Radius; `to_prompt_str()` выводит размеры (Sprint 5.5) |
+| Placement conventions | не описаны в prompt | `Box.Placement` = угол, не центр; `Cylinder/Cone` = центр основания; примеры в system prompt (Sprint 5.5) |
