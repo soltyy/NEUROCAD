@@ -169,11 +169,12 @@ def _make_feedback(error: str, category: str) -> str:
         m = _re.search(r"name '(\w+)' is not defined", error)
         varname = m.group(1) if m else ""
         return (
-            f"Variable '{varname}' is not defined — objects from previous executions "
-            "are not available as Python variables in a new request. "
-            f"To reference an existing document object use: "
-            f"obj = doc.getObject('ObjectName')  (use the object's Name, not its Label). "
-            "If the object does not exist yet, create it from scratch."
+            f"NameError: '{varname}' is not defined. Two common causes: "
+            f"(1) Variable from a previous request — define it at the top of this script, "
+            f"or retrieve the existing object with obj = doc.getObject('ObjectName'); "
+            f"(2) Variable defined inside an 'if' block but used outside its scope — "
+            f"always define parameters (dimensions, flags) unconditionally at the top of "
+            f"the script, not inside conditional branches."
         )
     if "unit mismatch" in error_lower or "quantity::operator" in error_lower:
         return (
@@ -207,6 +208,16 @@ def _make_feedback(error: str, category: str) -> str:
             "(4) sk.MapMode = 'FlatFace'. "
             "Alternatively, avoid PartDesign::Body entirely and use Part WB "
             "(Part::Revolution, Part::Extrusion) — more reliable in headless scripts."
+        )
+    if "must be bool, not int" in error_lower or "argument 2 must be bool" in error_lower:
+        return (
+            "TypeError: a boolean argument received an integer. "
+            "FreeCAD C++ bindings require Python True/False, not 1/0. "
+            "Common cases: "
+            "makePipeShell(sections, makeSolid=True, isFrenet=True) — both flags must be bool; "
+            "Part::Revolution/Extrusion Solid property: feat.Solid = True (not 1); "
+            "makePipeShell positional form: wire.makePipeShell([profile], True, True). "
+            "Replace every integer 1/0 used as a boolean flag with True/False."
         )
     return f"Execution failed: {error}"
 

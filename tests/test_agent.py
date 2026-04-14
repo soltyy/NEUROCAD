@@ -636,5 +636,15 @@ def test_unsupported_api_math_retries():
         assert mock_exec.call_count == 3
 
 
+def test_make_feedback_bool_not_int():
+    """_make_feedback gives actionable hint for 'must be bool, not int' TypeError."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("argument 2 must be bool, not int", "runtime")
+    assert "True/False" in feedback
+    assert "makePipeShell" in feedback
+    feedback2 = _make_feedback("TypeError: must be bool, not int", "runtime")
+    assert "True/False" in feedback2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
