@@ -789,9 +789,23 @@ expanded = shape.makeOffsetShape(2.0, 1e-6)
 outer_wire = wire_shape.makeOffset2D(2.0)
 
 ===========================================================================
-## Blocked (runtime error if used): os, sys, subprocess, open, socket, urllib,
-##   requests, shutil, tempfile, pathlib, ctypes, pickle, importlib, FreeCADGui,
-##   eval, exec, __import__
+## Blocked (runtime error if used):
+##   import os / sys / subprocess / socket / urllib / http / requests /
+##          shutil / tempfile / pathlib / ctypes / cffi / pickle / shelve / importlib
+##   FreeCADGui, eval, exec, __import__
+##
+## Part::LinearPattern / Part::PolarPattern / Part::MultiTransform / Part::Array
+##   → THESE DO NOT EXIST in Part WB. Use a Python loop + Part.makeCompound([shapes]).
+##   For polar copy at N angles:
+##     import copy; shapes=[]
+##     for i in range(N):
+##         s = original_shape.copy(); s.rotate(center, axis, i*360/N); shapes.append(s)
+##     compound = Part.makeCompound(shapes)
+##     feat = doc.addObject("Part::Feature","Pattern"); feat.Shape = compound
+##
+## Variables from previous requests are NOT available — use doc.getObject("Name")
+##   to reference existing document objects in follow-up prompts.
+##
 ## Part.makeGear / makeInvoluteGear (deprecated) → use PartDesign::InvoluteGear (see PART V)
 ## Part::Extrusion with open wire — profile must be a closed wire or face
 ## Sweep profile that self-intersects or is tangent to the central shaft

@@ -13,11 +13,20 @@ from neurocad.core.executor import (
 
 
 def test_pre_check_blocks_forbidden_tokens():
-    """_pre_check detects blocked tokens."""
+    """_pre_check detects blocked tokens.
+    Import-context-only tokens (socket, os, etc.) are blocked only after 'import'/'from'.
+    Always-blocked tokens (eval, exec, open, __import__, FreeCADGui) are blocked anywhere.
+    """
+    from neurocad.core.executor import _IMPORT_CONTEXT_ONLY
     for token in _BLOCKED_NAME_TOKENS:
-        code = f"x = {token}.something"
+        if token in _IMPORT_CONTEXT_ONLY:
+            # These are only blocked in import context
+            code = f"import {token}"
+        else:
+            # Always blocked regardless of context
+            code = f"x = {token}('test')"
         error = _pre_check(code)
-        assert error is not None
+        assert error is not None, f"Expected '{token}' to be blocked in: {code!r}"
         assert token in error
 
 
@@ -221,6 +230,44 @@ def test_import_sys_blocked():
     error = _pre_check(code)
     assert error is not None
     assert "Blocked token 'sys'" in error
+
+
+def test_socket_as_variable_allowed():
+    """'socket' as a variable name is allowed — only blocked in import context."""
+    code = "socket = doc.addObject('Part::Sphere', 'EyeSocket')"
+    error = _pre_check(code)
+    assert error is None
+
+
+def test_socket_import_blocked():
+    """'import socket' is blocked — socket is dangerous as a module."""
+    code = "import socket"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'socket'" in error
+
+
+def test_os_as_variable_allowed():
+    """'os' used as variable name is now allowed (only blocked in import context)."""
+    code = "os_version = 1"  # 'os_version' is different token from 'os'
+    error = _pre_check(code)
+    assert error is None
+
+
+def test_eval_always_blocked():
+    """'eval' is always blocked regardless of context."""
+    code = "result = eval('1+1')"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'eval'" in error
+
+
+def test_exec_always_blocked():
+    """'exec' is always blocked regardless of context."""
+    code = "exec('x=1')"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'exec'" in error
 
 
 if __name__ == "__main__":

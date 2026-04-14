@@ -27,6 +27,18 @@ _BLOCKED_NAME_TOKENS = frozenset({
     # dangerous modules are caught by their own names above.
 })
 
+# Tokens that are dangerous only when used as a module import target, NOT as variable names.
+# e.g.  import socket        → blocked (socket after import keyword)
+#        socket = doc.add...  → allowed (socket as local variable name)
+# Tokens NOT in this set but in _BLOCKED_NAME_TOKENS (eval, exec, open, etc.)
+# are blocked unconditionally regardless of context.
+_IMPORT_CONTEXT_ONLY = frozenset({
+    "socket", "urllib", "http", "requests",
+    "shutil", "tempfile", "pathlib",
+    "ctypes", "cffi", "pickle", "shelve", "importlib",
+    "os", "sys", "subprocess",
+})
+
 
 @dataclass
 class ExecResult:
@@ -41,12 +53,24 @@ def _pre_check(code: str) -> str | None:
     """Check for forbidden tokens using tokenize.
 
     Returns error message if blocked token found, otherwise None.
+    Tokens in _IMPORT_CONTEXT_ONLY are only blocked when they appear immediately
+    after an 'import' or 'from' keyword (module import context), not as variable names.
     """
     try:
+        prev_meaningful: str | None = None
         tokens = tokenize.generate_tokens(io.StringIO(code).readline)
         for tok in tokens:
-            if tok.type == tokenize.NAME and tok.string in _BLOCKED_NAME_TOKENS:
-                return f"Blocked token '{tok.string}' found at line {tok.start[0]}"
+            if tok.type not in (tokenize.COMMENT, tokenize.NEWLINE,
+                                tokenize.NL, tokenize.INDENT, tokenize.DEDENT):
+                if tok.type == tokenize.NAME and tok.string in _BLOCKED_NAME_TOKENS:
+                    if tok.string in _IMPORT_CONTEXT_ONLY:
+                        # Only block when used as a module name in import statement
+                        if prev_meaningful in ("import", "from"):
+                            return f"Blocked token '{tok.string}' found at line {tok.start[0]}"
+                    else:
+                        # Always block (eval, exec, open, __import__, FreeCADGui)
+                        return f"Blocked token '{tok.string}' found at line {tok.start[0]}"
+                prev_meaningful = tok.string if tok.type == tokenize.NAME else prev_meaningful
     except tokenize.TokenError as e:
         return f"Tokenization error: {e}"
     return None

@@ -259,7 +259,9 @@ def test_status_label_and_enabled_state_updates(qapp):
     dock._set_busy(True)
     dock._status_label.setText.assert_called_once_with("Thinking...")
     dock._input.setEnabled.assert_called_once_with(False)
-    dock._send_btn.setEnabled.assert_called_once_with(False)
+    # send_btn stays enabled (becomes Stop button) — not disabled
+    dock._send_btn.setEnabled.assert_called_once_with(True)
+    dock._send_btn.setText.assert_called_once_with("■")
     dock._snapshot_btn.setEnabled.assert_called_once_with(False)
     dock._export_btn.setEnabled.assert_called_once_with(False)
 
@@ -273,6 +275,7 @@ def test_status_label_and_enabled_state_updates(qapp):
     dock._status_label.setText.assert_called_once_with("Ready")
     dock._input.setEnabled.assert_called_once_with(True)
     dock._send_btn.setEnabled.assert_called_once_with(True)
+    dock._send_btn.setText.assert_called_once_with("→")
     dock._snapshot_btn.setEnabled.assert_called_once_with(True)
     dock._export_btn.setEnabled.assert_called_once_with(True)
 

@@ -365,7 +365,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
     def _connect_signals(self):
         """Connect UI signals."""
-        self._send_btn.clicked.connect(self._on_submit)
+        self._send_btn.clicked.connect(self._on_btn_clicked)
         self._snapshot_btn.clicked.connect(self._on_snapshot_requested)
         self._export_btn.clicked.connect(self._on_export_requested)
         self._input.submitted.connect(self._on_submit)
@@ -410,16 +410,65 @@ class CopilotPanel(QtWidgets.QDockWidget):
             scrollbar.setValue(scrollbar.maximum())
 
     def _set_busy(self, busy: bool):
-        """Enable/disable input and update status dot."""
+        """Toggle between send mode (→) and stop mode (■)."""
         self._input.setEnabled(not busy)
-        self._send_btn.setEnabled(not busy)
         self._snapshot_btn.setEnabled(not busy)
         self._export_btn.setEnabled(not busy)
-        self._status_dot.set_state("thinking" if busy else "idle")
         if busy:
+            # Transform send button into stop button (always enabled so user can cancel)
+            self._send_btn.setText("■")
+            self._send_btn.setToolTip("Stop")
+            self._send_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ef4444;
+                    border: none;
+                    border-radius: 15px;
+                    color: white;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #dc2626; }
+            """)
+            self._send_btn.setEnabled(True)
+            self._status_dot.set_state("thinking")
             self._status_label.setText("Thinking...")
         else:
+            # Restore send button
+            self._send_btn.setText("→")
+            self._send_btn.setToolTip("")
+            self._send_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2196f3;
+                    border: none;
+                    border-radius: 15px;
+                    color: white;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #1976d2; }
+                QPushButton:disabled { background-color: #b0bec5; }
+            """)
+            self._send_btn.setEnabled(True)
+            self._status_dot.set_state("idle")
             self._status_label.setText("Ready")
+
+    def _on_btn_clicked(self):
+        """Route send/stop button click based on current state."""
+        if self._worker is not None and self._worker.is_running():
+            self._on_stop()
+        else:
+            self._on_submit()
+
+    def _on_stop(self):
+        """Cancel the running request immediately."""
+        log_info("panel.stop", "user requested stop")
+        if self._request_watchdog is not None:
+            self._request_watchdog.stop()
+        if self._worker is not None:
+            self._worker.cancel()
+            self._worker = None
+        self._set_busy(False)
+        self._add_message("feedback", "Cancelled")
+        if hasattr(self, "_current_assistant_bubble"):
+            del self._current_assistant_bubble
 
     def _on_submit(self):
         """Handle Send button or Enter press."""

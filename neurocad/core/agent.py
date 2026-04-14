@@ -149,6 +149,32 @@ def _make_feedback(error: str, category: str) -> str:
         return f"LLM error: {error}"
     # Runtime: check for known patterns
     error_lower = error.lower()
+    if "is not a document object type" in error_lower:
+        import re as _re
+        m = _re.search(r"'([^']+)' is not a document object type", error)
+        bad_type = m.group(1) if m else ""
+        if bad_type in ("Part::LinearPattern", "Part::PolarPattern",
+                        "Part::MultiTransform", "Part::Array"):
+            return (
+                f"'{bad_type}' does not exist in Part WB. "
+                "Part workbench has no pattern/transform objects. "
+                "For linear arrays: use a Python loop + Part.makeCompound([...copies...]). "
+                "For polar arrays: use a Python loop with FreeCAD.Rotation to copy shapes. "
+                "Example: copies = []; shape.rotate(center, axis, angle_deg) in loop; "
+                "Part::Compound with Links = [...] for grouping without fusion."
+            )
+        return f"Unknown object type '{bad_type}'. Check the exact type string."
+    if "is not defined" in error_lower:
+        import re as _re
+        m = _re.search(r"name '(\w+)' is not defined", error)
+        varname = m.group(1) if m else ""
+        return (
+            f"Variable '{varname}' is not defined — objects from previous executions "
+            "are not available as Python variables in a new request. "
+            f"To reference an existing document object use: "
+            f"obj = doc.getObject('ObjectName')  (use the object's Name, not its Label). "
+            "If the object does not exist yet, create it from scratch."
+        )
     if "unit mismatch" in error_lower or "quantity::operator" in error_lower:
         return (
             "Arithmetic failed: FreeCAD Quantity unit mismatch. "
