@@ -687,6 +687,14 @@ head.Visibility=False; shank.Visibility=False; doc.recompute()
 #   cut=doc.addObject("Part::Cut","Threaded"); cut.Base=body; cut.Tool=sw
 #   body.Visibility=False; sw.Visibility=False; doc.recompute()
 #
+# ANTI-PATTERN — do NOT fuse a cylinder with the thread sweep before cutting:
+#   thread_tool = Fuse(Cylinder_r >= shaft_r, sweep)  →  Cut(bolt, thread_tool)
+#   The cylinder swallows the thread profile entirely — the cut produces a SMOOTH
+#   surface with no visible thread groove.
+# CORRECT — cut the sweep directly from the bolt shaft, no intermediate cylinder:
+#   cut = doc.addObject("Part::Cut","Threaded"); cut.Base=bolt; cut.Tool=sweep
+#   bolt.Visibility=False; sweep.Visibility=False; doc.recompute()
+#
 # Decorative thread — Revolution of tooth + LinearPattern (any length, always reliable):
 #   pitch=3.0; thread_l=60.0; major_r=12.0
 #   tooth_pts=[FreeCAD.Vector(major_r,0,0), FreeCAD.Vector(major_r+pitch*0.5,0,0),

@@ -193,20 +193,34 @@ def test_build_namespace_includes_random():
     assert namespace["random"] is random
 
 
-def test_import_math_blocked():
-    """import math is blocked by tokenizer."""
+def test_import_math_allowed():
+    """import math is allowed — 'import' keyword is no longer a blocked token."""
     code = "import math"
     error = _pre_check(code)
-    assert error is not None
-    assert "Blocked token 'import'" in error
+    assert error is None
 
 
-def test_import_random_blocked():
-    """import random is blocked by tokenizer."""
+def test_import_random_allowed():
+    """import random is allowed — 'import' keyword is no longer a blocked token."""
     code = "import random"
     error = _pre_check(code)
+    assert error is None
+
+
+def test_import_os_blocked():
+    """import os is blocked because 'os' is a blocked name token."""
+    code = "import os"
+    error = _pre_check(code)
     assert error is not None
-    assert "Blocked token 'import'" in error
+    assert "Blocked token 'os'" in error
+
+
+def test_import_sys_blocked():
+    """import sys is blocked because 'sys' is a blocked name token."""
+    code = "import sys"
+    error = _pre_check(code)
+    assert error is not None
+    assert "Blocked token 'sys'" in error
 
 
 if __name__ == "__main__":
