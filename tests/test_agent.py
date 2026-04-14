@@ -231,14 +231,15 @@ Part.makeSphere(15)
         assert mock_exec.call_count == 6  # 2 blocks per attempt × 3 attempts
 
 
-def test_run_sandbox_policy_imports_stripped():
-    """Safe imports are stripped from code blocks before execution."""
+def test_run_sandbox_policy_safe_imports_pass_through():
+    """stdlib imports pass through; redundant FreeCAD module imports are stripped by extractor."""
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.complete.return_value.content = """```python
-import FreeCAD
+import math
 import Part
-box = Part.makeBox(10,10,10)
+import FreeCAD
+box = Part.makeBox(10, 10, 10)
 ```"""
     history = History()
 
@@ -247,10 +248,13 @@ box = Part.makeBox(10,10,10)
         mock_exec.return_value = ExecResult(ok=True, new_objects=["Box"])
         result = run("make box", mock_doc, mock_adapter, history)
         assert result.ok is True
-        # Ensure the executed code does not contain safe imports
         executed_code = mock_exec.call_args[0][0]
-        assert "import FreeCAD" not in executed_code
+        # stdlib imports pass through (math is not stripped)
+        assert "import math" in executed_code
+        # Pre-loaded FreeCAD module imports are stripped as redundant (already in namespace)
         assert "import Part" not in executed_code
+        assert "import FreeCAD" not in executed_code
+        # The actual code is preserved
         assert "Part.makeBox" in executed_code
 
 
@@ -348,7 +352,7 @@ def test_build_system_includes_snapshot():
         result = build_system(mock_snap)
         mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1500)
         assert "Snapshot description" in result
-        assert "do NOT import" in result
+        assert "Blocked" in result or "blocked" in result  # blocked modules listed
 
 
 def test_error_categorization():
@@ -374,7 +378,7 @@ def test_error_categorization():
 def test_make_feedback():
     """_make_feedback returns user-friendly messages."""
     from neurocad.core.agent import _make_feedback
-    assert "forbidden tokens" in _make_feedback("", "blocked_token")
+    assert "not allowed" in _make_feedback("", "blocked_token") or "forbidden" in _make_feedback("", "blocked_token")
     assert "Unsupported FreeCAD API" in _make_feedback("", "unsupported_api")
     assert "Validation failed" in _make_feedback("error", "validation")
     assert "Execution timed out" in _make_feedback("", "timeout")
@@ -456,8 +460,8 @@ def test_contains_refusal_intent():
     assert _contains_refusal_intent("") is False
 
 
-def test_blocked_import_triggers_corrective_regeneration():
-    """Blocked import error adds corrective feedback and retries up to MAX_RETRIES."""
+def test_blocked_dangerous_module_triggers_corrective_regeneration():
+    """Blocked dangerous module (os, sys, etc.) adds corrective feedback and retries."""
     from unittest.mock import MagicMock, patch
     from neurocad.core.agent import run
     from neurocad.core.executor import ExecResult
@@ -465,7 +469,7 @@ def test_blocked_import_triggers_corrective_regeneration():
 
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
-    mock_adapter.complete.return_value.content = "```python\nimport math\nPart.makeBox(10,10,10)\n```"
+    mock_adapter.complete.return_value.content = "```python\nimport os\nos.system('ls')\n```"
     history = History()
 
     with patch("neurocad.core.context.capture") as mock_capture, \
@@ -474,18 +478,17 @@ def test_blocked_import_triggers_corrective_regeneration():
          patch("neurocad.core.agent._execute_with_rollback") as mock_exec:
         mock_capture.return_value = MagicMock()
         mock_build_system.return_value = "system"
-        mock_extract.return_value = ["import math\nPart.makeBox(10,10,10)"]
+        mock_extract.return_value = ["import os\nos.system('ls')"]
         mock_exec.return_value = ExecResult(
             ok=False,
             new_objects=[],
-            error="Blocked token 'import' found at line 1",
+            error="Blocked token 'os' found at line 1",
         )
-        result = run("make a box", mock_doc, mock_adapter, history)
+        result = run("list files", mock_doc, mock_adapter, history)
 
         assert result.ok is False
         assert result.attempts == 3          # retries exhaust MAX_RETRIES
-        # result.error carries the raw last error; feedback content is in history
-        assert "import" in result.error.lower()
+        assert "os" in result.error.lower()
         assert mock_adapter.complete.call_count == 3
         assert mock_exec.call_count == 3
 

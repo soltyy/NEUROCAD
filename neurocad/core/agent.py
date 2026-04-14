@@ -76,9 +76,23 @@ def _is_blocked_import(error: str) -> bool:
 def _make_feedback(error: str, category: str) -> str:
     """Return a concise user-facing feedback message."""
     if category == "blocked_token":
-        if "'import'" in error.lower():
-            return "The code contains an import statement. The math and random modules are already pre‑loaded; use math.cos(), math.sin(), math.pi, random.random() etc. directly without importing."
-        return "The code contains forbidden tokens (e.g., import, FreeCADGui). Remove them."
+        error_lower = error.lower()
+        # Extract the blocked token name from the error message, e.g. "Blocked token 'os' found at line 3"
+        import re as _re
+        m = _re.search(r"blocked token '(\w+)'", error_lower)
+        token = m.group(1) if m else ""
+        if token in ("os", "sys", "subprocess", "socket", "urllib", "http",
+                     "requests", "shutil", "tempfile", "pathlib",
+                     "ctypes", "cffi", "pickle", "shelve", "importlib"):
+            return (
+                f"Module '{token}' is blocked — file system, process, and network access "
+                f"are not permitted. Use FreeCAD's built-in Part/PartDesign/Draft/Mesh APIs only."
+            )
+        if token == "freecadgui":
+            return "FreeCADGui is not available in the headless execution context. Do not use it."
+        if token in ("eval", "exec", "__import__"):
+            return f"'{token}' is forbidden. Do not use dynamic code execution."
+        return f"Blocked token '{token}' is not allowed. Remove it."
     if category == "unsupported_api":
         error_lower = error.lower()
         math_keywords = ["cos", "sin", "tan", "sqrt", "pi", "atan"]
@@ -110,12 +124,62 @@ def _make_feedback(error: str, category: str) -> str:
             "PartDesign::InvoluteGear for gears."
         )
     if category == "validation":
+        error_lower = error.lower()
+        if "shape is null" in error_lower:
+            return (
+                "Validation failed: shape is null — an upstream object failed to compute its shape. "
+                "Ensure every object has doc.recompute() called after setting its properties, "
+                "and that boolean inputs (Base/Tool) are valid solids before use. "
+                "Avoid mixing PartDesign::Body features with Part WB boolean operations outside the Body."
+            )
+        if "touched" in error_lower and "invalid" in error_lower:
+            return (
+                "Validation failed: object state ['Touched', 'Invalid'] — the geometry could not be computed. "
+                "Most common cause: Part::Fillet or Part::Chamfer applied to an object that contains helical "
+                "sweep or complex boolean cut results — OCCT cannot reliably fillet such edges. "
+                "Fix: remove the Fillet entirely, OR apply fillets only to individual simple primitives "
+                "(e.g. the hex head prism, the shank cylinder) BEFORE the thread Cut operation. "
+                "Never fillet the final assembled+threaded body. "
+                "If no fillet is involved: check that all upstream shapes are valid with shape.isValid()."
+            )
         return f"Validation failed: {error}"
     if category == "timeout":
         return "Execution timed out."
     if category == "llm_transport":
         return f"LLM error: {error}"
-    # default
+    # Runtime: check for known patterns
+    error_lower = error.lower()
+    if "unit mismatch" in error_lower or "quantity::operator" in error_lower:
+        return (
+            "Arithmetic failed: FreeCAD Quantity unit mismatch. "
+            "Reading object properties (e.g. box.Height, cyl.Radius) returns a Quantity, not a float. "
+            "Use your own numeric variables for calculations instead of reading properties back, "
+            "or wrap with float(): e.g. float(box.Height)."
+        )
+    if "'partdesign.feature' object has no attribute" in error_lower:
+        return (
+            "'PartDesign::Feature' is not a valid FreeCAD object type. "
+            "For a raw shape container use doc.addObject('Part::Feature', 'Name'). "
+            "For PartDesign operations use body.newObject('PartDesign::Pad', ...) etc."
+        )
+    if "rotation constructor" in error_lower:
+        return (
+            "Wrong FreeCAD.Rotation() constructor arguments. Valid forms: "
+            "Rotation(FreeCAD.Vector(axis), degrees), "
+            "Rotation(yaw_deg, pitch_deg, roll_deg), "
+            "Rotation(x, y, z, w) for quaternion. "
+            "Do NOT pass a plain tuple or a single float."
+        )
+    if "sketchobject" in error_lower and "has no attribute 'support'" in error_lower:
+        return (
+            "Sketch attachment failed: 'Sketcher.SketchObject' has no attribute 'Support'. "
+            "Required order: (1) sk = doc.addObject('Sketcher::SketchObject', 'Name'); "
+            "(2) body.addObject(sk); (3) sk.Support = (body.Origin, ['XY_Plane']); "
+            "(4) sk.MapMode = 'FlatFace'. "
+            "Support MUST reference body.Origin planes ('XY_Plane'/'XZ_Plane'/'YZ_Plane') — "
+            "do NOT attach to faces of pads, sketches, or other features; face refs are "
+            "fragile in headless mode and cause TNP errors."
+        )
     return f"Execution failed: {error}"
 
 
@@ -239,7 +303,7 @@ def run(
     audit_log(
         "agent_start",
         {
-            "user_prompt_preview": text[:500],
+            "user_prompt_preview": text,
             "provider": getattr(adapter, "provider", type(adapter).__name__),
             "model": getattr(adapter, "model", "unknown"),
             "document_name": getattr(doc, "Name", None),
@@ -257,7 +321,7 @@ def run(
             "agent_error",
             {
                 "error_type": "early_refusal",
-                "user_prompt_preview": text[:500],
+                "user_prompt_preview": text,
                 "provider": getattr(adapter, "provider", type(adapter).__name__),
                 "model": getattr(adapter, "model", "unknown"),
                 "document_name": getattr(doc, "Name", None),
@@ -354,7 +418,7 @@ def run(
                 "agent_error",
                 {
                     "error_type": "llm_call_failed",
-                    "user_prompt_preview": text[:500],
+                    "user_prompt_preview": text,
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -386,7 +450,7 @@ def run(
                 {
                     "attempt": attempts,
                     "max_retries": MAX_RETRIES,
-                    "llm_response_preview": llm_text[:500],
+                    "llm_response_preview": llm_text,
                     "ok": False,
                     "error": "No code generated",
                     "error_category": "no_code",
@@ -405,7 +469,7 @@ def run(
                 "agent_error",
                 {
                     "error_type": "no_code_generated",
-                    "user_prompt_preview": text[:500],
+                    "user_prompt_preview": text,
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -498,8 +562,8 @@ def run(
                 {
                     "attempt": attempts,
                     "max_retries": MAX_RETRIES,
-                    "llm_response_preview": llm_text[:500],
-                    "code_preview": (blocks[0] if blocks else "")[:500],
+                    "llm_response_preview": llm_text,
+                    "code_preview": blocks[0] if blocks else "",
                     "ok": True,
                     "error": None,
                     "error_category": None,
@@ -517,9 +581,9 @@ def run(
             audit_log(
                 "agent_success",
                 {
-                    "user_prompt_preview": text[:500],
-                    "llm_response_preview": llm_text[:500],
-                    "code_preview": (blocks[0] if blocks else "")[:500],
+                    "user_prompt_preview": text,
+                    "llm_response_preview": llm_text,
+                    "code_preview": blocks[0] if blocks else "",
                     "provider": getattr(adapter, "provider", type(adapter).__name__),
                     "model": getattr(adapter, "model", "unknown"),
                     "document_name": getattr(doc, "Name", None),
@@ -559,8 +623,8 @@ def run(
                 {
                     "attempt": attempts,
                     "max_retries": MAX_RETRIES,
-                    "llm_response_preview": llm_text[:500],
-                    "code_preview": (blocks[0] if blocks else "")[:500],
+                    "llm_response_preview": llm_text,
+                    "code_preview": blocks[0] if blocks else "",
                     "ok": False,
                     "error": last_error,
                     "error_category": category,
@@ -584,9 +648,9 @@ def run(
         "agent_error",
         {
             "error_type": "max_retries_exhausted",
-            "user_prompt_preview": text[:500],
-            "llm_response_preview": llm_text[:500] if 'llm_text' in locals() else "",
-            "code_preview": (blocks[0] if blocks else "")[:500] if 'blocks' in locals() else "",
+            "user_prompt_preview": text,
+            "llm_response_preview": llm_text if 'llm_text' in locals() else "",
+            "code_preview": (blocks[0] if blocks else "") if 'blocks' in locals() else "",
             "provider": getattr(adapter, "provider", type(adapter).__name__),
             "model": getattr(adapter, "model", "unknown"),
             "document_name": getattr(doc, "Name", None),

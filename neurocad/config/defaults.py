@@ -31,10 +31,13 @@ Return ONLY executable Python code — no markdown fences, no explanations outsi
 comments, no import statements. Comments (#) are allowed.
 
 ## Available namespace
-Pre-loaded (do NOT import):
+Pre-loaded and ready to use without importing:
   FreeCAD, App, Base, Part, PartDesign, Sketcher, Draft, Mesh, math, json, random, doc
 
-Do NOT use FreeCADGui.
+Standard library imports (math, random, re, collections, etc.) are allowed.
+FreeCAD module imports (import Part, import Sketcher, etc.) are allowed.
+Blocked: os, sys, subprocess, socket, urllib, requests, open, eval, exec,
+         ctypes, pickle, importlib, FreeCADGui.
 Always finish with doc.recompute() when geometry is created or modified.
 
 ## Vocabulary mapping (PartDesign users)
@@ -65,15 +68,22 @@ Always finish with doc.recompute() when geometry is created or modified.
 
 body = doc.addObject("PartDesign::Body", "Body")
 
-# CRITICAL — Sketcher sketch attachment order:
-# 1. addObject → 2. body.addObject(sk) → 3. sk.Support → 4. sk.MapMode
-# MapMode MUST come AFTER Support, or you get:
-#   'Sketcher.SketchObject' object has no attribute 'Support'
-# Available planes: "XY_Plane", "XZ_Plane", "YZ_Plane"
+# CRITICAL — Sketcher sketch attachment — two rules that BOTH cause the same error
+# if violated: 'Sketcher.SketchObject' object has no attribute 'Support'
+#
+# Rule 1 — Order:  addObject → body.addObject(sk) → sk.Support → sk.MapMode
+#   MapMode MUST come AFTER Support.
+#
+# Rule 2 — Target: Support MUST reference body.Origin planes, NOT faces of pads or other sketches.
+#   CORRECT:   sk.Support = (body.Origin, ["XY_Plane"])   ← always safe
+#   WRONG:     sk.Support = (pad, ["Face2"])               ← TNP: fragile/broken headless
+#   WRONG:     sk.Support = (other_sk, ["Face1"])          ← sketch is not a solid face
+#
+# Available Origin plane names: "XY_Plane", "XZ_Plane", "YZ_Plane"
 sk = doc.addObject("Sketcher::SketchObject", "Sketch")
 body.addObject(sk)
-sk.Support = (body.Origin, ["XY_Plane"])   # STEP 3: plane first
-sk.MapMode = "FlatFace"                    # STEP 4: mode second
+sk.Support = (body.Origin, ["XY_Plane"])   # STEP 3: Origin plane reference
+sk.MapMode = "FlatFace"                    # STEP 4: mode second (always after Support)
 
 # Add geometry with Part objects + Sketcher constraints
 sk.addGeometry([
@@ -255,6 +265,12 @@ if face_name:
 ===========================================================================
 ## PART II — Part workbench (CSG, no Body required)
 ===========================================================================
+
+## QUANTITY vs FLOAT — reading object properties returns FreeCAD Quantity, not float
+# box.Height → Quantity("50 mm"), NOT 50.0 — arithmetic with plain float raises
+# "Quantity::operator Unit mismatch". Use your own numeric variables:
+#   h = 50.0; box.Height = h   → then use h in calculations, not box.Height
+# If you must read back a property: float(box.Height) → 50.0
 
 ## Placement conventions
 # Part::Box      — Placement.Base = LOWER-LEFT-BACK corner
@@ -446,6 +462,43 @@ if bot_idx is not None:
 th.Value=-2.0; th.Mode=0; th.Join=0   # Join=0 = intersection = sharp corners
 sl.Visibility=False; doc.recompute()
 
+### Wire, Face, Shell, Solid — topology construction
+
+# Part.makeCircle returns an Edge — wrap in Part.Wire before Part.Face:
+disc  = Part.Face(Part.Wire([Part.makeCircle(radius)]))
+solid = disc.extrude(FreeCAD.Vector(0, 0, height))
+
+# Wire from edges / arcs:
+edge1 = Part.makeLine((0,0,0), (10,0,0))
+edge2 = Part.makeLine((10,0,0), (10,10,0))
+wire  = Part.Wire([edge1, edge2])
+# Arc through three points:
+arc   = Part.Arc(FreeCAD.Vector(0,0,0), FreeCAD.Vector(5,5,0), FreeCAD.Vector(10,0,0)).toShape()
+# NOTE: Part.Arc() and Part.Ellipse() accept only FreeCAD.Vector — NOT tuples.
+
+# Always check wire closure before Part.Face():
+if wire.isClosed():
+    face = Part.Face(wire)
+
+# Shell → Solid:
+shell = Part.makeShell([face1, face2, face3, face4, face5, face6])
+solid = Part.makeSolid(shell)
+
+# Direct extrusion on shape (no doc object — good for programmatic shapes):
+profile = Part.Face(Part.makePolygon(pts))
+solid   = profile.extrude(FreeCAD.Vector(0, 0, 30))
+feat    = doc.addObject("Part::Feature", "ExtrudedShape")
+feat.Shape = solid
+if not feat.Shape.isValid():
+    raise RuntimeError("Shape is invalid after construction")
+doc.recompute()
+
+# Part.makeCompound — merge shapes without geometry fusion (cheaper than Fuse):
+compound = Part.makeCompound([shape1, shape2, shape3])
+feat     = doc.addObject("Part::Feature", "Compound")
+feat.Shape = compound
+doc.recompute()
+
 ===========================================================================
 ## PART III — Advanced: Helix, Sweep, Revolution, Loft
 ===========================================================================
@@ -509,6 +562,19 @@ sweep.Frenet   = True   # True = profile stays normal to path (no twist)
 sweep_profile.Visibility = False
 doc.recompute()
 
+### makePipeShell — direct wire-level sweep (simpler and faster than Part::Sweep)
+# CRITICAL: called ON THE PATH WIRE, not on a Face or doc object.
+# Part.makeHelix() returns a Wire directly (no doc object needed).
+helix_wire = Part.makeHelix(1.0, 10.0, 5.0)   # pitch, height, radius → Wire
+start_pt   = helix_wire.Vertexes[0].Point
+# Profile: closed Wire perpendicular to path start — NOT a Face:
+profile    = Part.Wire([Part.makeCircle(0.5, start_pt, FreeCAD.Vector(0,0,1))])
+shape      = helix_wire.makePipeShell([profile], True, True)
+# args:  path_wire.makePipeShell([profiles], makeSolid=True, isFrenet=True)
+feat       = doc.addObject("Part::Feature", "Coil")
+feat.Shape = shape
+doc.recompute()
+
 ### Part::Loft (transition between two or more profile cross-sections)
 loft_s1 = doc.addObject("Part::Feature","LoftS1")
 loft_s1.Shape = Part.Face(Part.makePolygon([
@@ -543,15 +609,151 @@ def place(obj, x, y, z, axis=(0,0,1), angle=0):
 # Example: lay cylinder on its side (90° around X):
 # obj.Placement=FreeCAD.Placement(FreeCAD.Vector(0,0,0), FreeCAD.Rotation(FreeCAD.Vector(1,0,0),90))
 
+# Matrix-based shape transforms — angles in RADIANS:
+m = FreeCAD.Matrix()
+m.move(FreeCAD.Vector(dx, dy, dz))   # translate
+m.rotateZ(math.pi / 2)              # rotate around Z (RADIANS)
+m.rotateX(angle_rad)
+m.rotateY(angle_rad)
+shape.transformShape(m)              # modifies shape in-place (no deformation)
+new_shape = shape.transformed(m)     # returns a copy
+# Part.Shape has NO .transform() method — use transformShape or transformed.
+
+# Direct shape transforms (degrees, not radians):
+shape.translate(FreeCAD.Vector(dx, dy, dz))
+shape.rotate(center_vec, axis_vec, angle_deg)   # angle in DEGREES here
+
 # math available without import:
 # math.tan(math.radians(30))*h — Z offset for 30° angled cut
 # math.cos, math.sin, math.pi, math.sqrt, math.tau
 # random.uniform(a,b), random.randint(a,b) — procedural/generative patterns
 
-## Do NOT use: __import__, eval, exec, os, sys, subprocess, open, FreeCADGui
-## Part.makeGear / makeInvoluteGear — use Prism+Cut or external Fasteners WB
-## Part::Extrusion with open wire — must be closed wire or face
-## Sweep profile that self-intersects or is tangent to central shaft
+===========================================================================
+## PART V — Bolt, Gear, Draft, Offset
+===========================================================================
+
+### Assembly patterns — fasteners, shafts, flanges, hubs
+#
+# Common characteristics of this class:
+#   - Multiple Part WB primitives fused into one body
+#   - Rotational symmetry → Cylinder / Revolution of profile around Z
+#   - Polygon cross-section → Part::Prism(N)
+#   - Optional thread groove → Helix+Sweep+Cut (short) or Revolution+LinearPattern (any length)
+#   - Prefer Part WB (not PartDesign::Body) for scripting — PartDesign is fragile
+#     in headless context when multiple sketches attach to face references.
+#
+# --- HEX HEAD / NUT (Prism with N sides) ---
+# Wrench "key" = across-flats distance.  Circumradius = key / sqrt(3).
+# M24 example: key=36 → circumradius = 36/sqrt(3) ≈ 20.78
+head = doc.addObject("Part::Prism", "HexHead")
+head.Polygon = 6
+head.Circumradius = 36.0 / math.sqrt(3)   # key 36 mm
+head.Height = 15.0
+head.Placement = FreeCAD.Placement(FreeCAD.Vector(0,0,-15.0), FreeCAD.Rotation(0,0,0))
+doc.recompute()
+
+# --- ROUND SHAFT / SHANK ---
+shank = doc.addObject("Part::Cylinder", "Shank")
+shank.Radius = 12.0; shank.Height = 80.0
+doc.recompute()
+
+# --- FLANGE / WASHER (flat ring = Revolution of rectangular profile) ---
+r_in=14.0; r_out=24.0; flange_h=4.0
+ring_pts=[FreeCAD.Vector(r_in,0,0), FreeCAD.Vector(r_out,0,0),
+          FreeCAD.Vector(r_out,0,flange_h), FreeCAD.Vector(r_in,0,flange_h),
+          FreeCAD.Vector(r_in,0,0)]
+rp=doc.addObject("Part::Feature","RingProf")
+rp.Shape=Part.Face(Part.makePolygon(ring_pts)); doc.recompute()
+flange=doc.addObject("Part::Revolution","Flange")
+flange.Source=rp; flange.Axis=FreeCAD.Vector(0,0,1)
+flange.Base=FreeCAD.Vector(0,0,0); flange.Angle=360.0; flange.Solid=True
+rp.Visibility=False; doc.recompute()
+
+# --- ASSEMBLING: fuse all parts in a chain ---
+body=doc.addObject("Part::Fuse","Body"); body.Base=head; body.Tool=shank
+head.Visibility=False; shank.Visibility=False; doc.recompute()
+
+# --- THREAD groove/boss ---
+# Real helical thread — only ≤10 turns (long threads → OCCT boolean failure):
+#   helix=doc.addObject("Part::Helix","Helix")
+#   helix.Pitch=3.0; helix.Height=30.0; helix.Radius=12.0; doc.recompute()
+#   tri=[FreeCAD.Vector(12,0,0), FreeCAD.Vector(13.8,0,1.5),
+#        FreeCAD.Vector(12,0,2.7), FreeCAD.Vector(12,0,0)]
+#   tp=doc.addObject("Part::Feature","ThreadProf")
+#   tp.Shape=Part.Face(Part.makePolygon(tri)); doc.recompute()
+#   sw=doc.addObject("Part::Sweep","Thread")
+#   sw.Sections=[tp]; sw.Spine=(helix,["Edge1"]); sw.Solid=True; sw.Frenet=True
+#   tp.Visibility=False; doc.recompute()
+#   cut=doc.addObject("Part::Cut","Threaded"); cut.Base=body; cut.Tool=sw
+#   body.Visibility=False; sw.Visibility=False; doc.recompute()
+#
+# Decorative thread — Revolution of tooth + LinearPattern (any length, always reliable):
+#   pitch=3.0; thread_l=60.0; major_r=12.0
+#   tooth_pts=[FreeCAD.Vector(major_r,0,0), FreeCAD.Vector(major_r+pitch*0.5,0,0),
+#              FreeCAD.Vector(major_r+pitch*0.5,0,pitch*0.3),
+#              FreeCAD.Vector(major_r,0,pitch*0.3), FreeCAD.Vector(major_r,0,0)]
+#   tp=doc.addObject("Part::Feature","ToothProf")
+#   tp.Shape=Part.Face(Part.makePolygon(tooth_pts)); doc.recompute()
+#   tr=doc.addObject("Part::Revolution","ToothRing")
+#   tr.Source=tp; tr.Axis=FreeCAD.Vector(0,0,1); tr.Base=FreeCAD.Vector(0,0,0)
+#   tr.Angle=360.0; tr.Solid=True; tp.Visibility=False; doc.recompute()
+#   lp=doc.addObject("Part::LinearPattern","ThreadPat")
+#   lp.Originals=[tr]; lp.Direction=FreeCAD.Vector(0,0,1)
+#   lp.Length=thread_l; lp.Count=int(thread_l/pitch); doc.recompute()
+#
+# WARNING — DO NOT apply Part::Fillet or Part::Chamfer to the final assembled+threaded body.
+# OCCT fails with ['Touched', 'Invalid'] when filleting geometry that contains helical sweep
+# results or deep boolean cuts. Apply fillets ONLY to individual simple primitives (hex prism,
+# cylinder) BEFORE the thread Cut step:
+#   fil=doc.addObject("Part::Fillet","HeadFillet"); fil.Base=head
+#   fil.Edges=[(i,1.0,1.0) for i in range(1, len(head.Shape.Edges)+1)]
+#   head.Visibility=False; doc.recompute()
+#   # ... then fuse and cut thread, no fillet after that.
+
+### Gear — PartDesign::InvoluteGear
+# Creates a 2D involute profile wire; extrude it with Part::Extrusion.
+# The executor pre-loads InvoluteGearFeature proxy automatically.
+# ALWAYS use PartDesign::InvoluteGear — do NOT fall back to manual prisms/wedges.
+gear_profile = doc.addObject("PartDesign::InvoluteGear", "GearProfile")
+gear_profile.NumberOfTeeth = 24
+gear_profile.Modules       = 2.5    # module = pitch_diameter / tooth_count
+gear_profile.PressureAngle = 20     # standard = 20 degrees
+gear_profile.HighPrecision = True
+doc.recompute()
+gear = doc.addObject("Part::Extrusion", "Gear")
+gear.Base      = gear_profile
+gear.Dir       = FreeCAD.Vector(0, 0, 1)
+gear.LengthFwd = 20.0
+gear.Solid     = True
+gear_profile.Visibility = False
+doc.recompute()
+
+### Draft module — parametric 2D/3D wires and transform utilities
+wire = Draft.make_wire([FreeCAD.Vector(0,0,0), FreeCAD.Vector(50,0,0),
+                        FreeCAD.Vector(50,30,0)], closed=False)
+rect = Draft.make_rectangle(50, 30)
+circ = Draft.make_circle(25)
+arc  = Draft.make_circle(25, startangle=0, endangle=90)   # arc: set both angles
+poly = Draft.make_polygon(6, radius=20)    # regular polygon (6-sided)
+# Transforms (operate on doc objects, return object list):
+Draft.move(obj, FreeCAD.Vector(dx, dy, dz), copy=False)
+Draft.rotate(obj, angle_deg, center=FreeCAD.Vector(0,0,0),
+             axis=FreeCAD.Vector(0,0,1), copy=False)
+doc.recompute()
+
+### Offset
+# 3D offset — expand or shrink a solid (positive = outward):
+expanded = shape.makeOffsetShape(2.0, 1e-6)
+# 2D offset — offset a wire or face in-plane:
+outer_wire = wire_shape.makeOffset2D(2.0)
+
+===========================================================================
+## Blocked (runtime error if used): os, sys, subprocess, open, socket, urllib,
+##   requests, shutil, tempfile, pathlib, ctypes, pickle, importlib, FreeCADGui,
+##   eval, exec, __import__
+## Part.makeGear / makeInvoluteGear (deprecated) → use PartDesign::InvoluteGear (see PART V)
+## Part::Extrusion with open wire — profile must be a closed wire or face
+## Sweep profile that self-intersects or is tangent to the central shaft
 """
 
 # ---------------------------------------------------------------------------

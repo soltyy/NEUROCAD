@@ -8,8 +8,23 @@ from ..config.config import load as load_config
 from .debug import log_warn
 
 _BLOCKED_NAME_TOKENS = frozenset({
-    "import", "from", "FreeCADGui", "__import__",
-    "os", "sys", "subprocess", "open", "eval", "exec",
+    # Intrinsics — can execute arbitrary code
+    "__import__", "eval", "exec",
+    # File / process / network access
+    "open", "os", "sys", "subprocess",
+    "socket", "urllib", "http", "requests",
+    "shutil", "tempfile", "pathlib",
+    # C-level access
+    "ctypes", "cffi",
+    # Serialisation that can execute code
+    "pickle", "shelve",
+    # Dynamic import — would bypass name-level blocking
+    "importlib",
+    # GUI — not available in headless execution context
+    "FreeCADGui",
+    # "import" and "from" are intentionally NOT blocked:
+    # safe imports (math, Part, FreeCAD, Sketcher, etc.) work fine;
+    # dangerous modules are caught by their own names above.
 })
 
 
