@@ -125,6 +125,13 @@ def _contains_refusal_intent(text: str) -> bool:
     return any(re.search(rf'\b{re.escape(kw)}\b', lower) for kw in REFUSAL_KEYWORDS)
 
 
+def _log_status(msg: str, notifications: list[str], callbacks: AgentCallbacks) -> None:
+    """Emit status to Report View, collect it for per-attempt audit, and call UI callback."""
+    log_notify(msg)
+    notifications.append(msg)
+    callbacks.on_status(msg)
+
+
 def _complete_with_timeout(adapter, messages, system: str, timeout_s: float | None = None):
     """Run adapter.complete() with a hard timeout guard."""
     if timeout_s is None:
@@ -292,9 +299,10 @@ def run(
 
     while attempts < MAX_RETRIES:
         attempts += 1
+        attempt_notifications: list[str] = []
         log_info("agent.run", "starting attempt", attempt=attempts, max_retries=MAX_RETRIES)
         callbacks.on_attempt(attempts, MAX_RETRIES)
-        callbacks.on_status(f"attempt {attempts}/{MAX_RETRIES}")
+        _log_status(f"attempt {attempts}/{MAX_RETRIES}", attempt_notifications, callbacks)
 
         # Get LLM response
         try:
@@ -305,7 +313,7 @@ def run(
                 message_count=len(messages),
                 provider=type(adapter).__name__,
             )
-            callbacks.on_status("sending request to LLM")
+            _log_status("sending request to LLM", attempt_notifications, callbacks)
             # Sprint 2 uses a single complete() call. Streaming is deferred.
             response = _complete_with_timeout(adapter, messages, system=system)
             llm_text = response.content
@@ -316,13 +324,32 @@ def run(
                 stop_reason=response.stop_reason,
                 output_tokens=response.output_tokens,
             )
-            callbacks.on_status(f"LLM response received, chars={len(llm_text)}")
+            _log_status(f"LLM response received, chars={len(llm_text)}", attempt_notifications, callbacks)
             if use_callbacks:
                 callbacks.on_chunk(llm_text)
         except Exception as e:
             log_error("agent.run", "adapter call failed", error=e)
-            callbacks.on_status(f"LLM call failed: {e}")
-            # Audit log
+            _log_status(f"LLM call failed: {e}", attempt_notifications, callbacks)
+            # Per-attempt audit log
+            audit_log(
+                "agent_attempt",
+                {
+                    "attempt": attempts,
+                    "max_retries": MAX_RETRIES,
+                    "ok": False,
+                    "error": str(e),
+                    "error_category": "llm_transport",
+                    "new_object_names": [],
+                    "block_count": 0,
+                    "rollback_count": 0,
+                    "notifications": attempt_notifications,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                },
+                correlation_id=get_correlation_id(),
+            )
+            # Final error audit log
             audit_log(
                 "agent_error",
                 {
@@ -347,13 +374,33 @@ def run(
         # Extract code blocks
         blocks = extract_code_blocks(llm_text)
         log_info("agent.run", "code blocks extracted", block_count=len(blocks))
-        callbacks.on_status(f"code extracted, blocks={len(blocks)}")
+        _log_status(f"code extracted, blocks={len(blocks)}", attempt_notifications, callbacks)
         if not blocks:
             # No code → treat as feedback
             history.add(Role.FEEDBACK, "No code generated.")
             log_warn("agent.run", "LLM returned no executable code")
-            callbacks.on_status("LLM returned no executable code")
-            # Audit log
+            _log_status("LLM returned no executable code", attempt_notifications, callbacks)
+            # Per-attempt audit log
+            audit_log(
+                "agent_attempt",
+                {
+                    "attempt": attempts,
+                    "max_retries": MAX_RETRIES,
+                    "llm_response_preview": llm_text[:500],
+                    "ok": False,
+                    "error": "No code generated",
+                    "error_category": "no_code",
+                    "new_object_names": [],
+                    "block_count": 0,
+                    "rollback_count": 0,
+                    "notifications": attempt_notifications,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                },
+                correlation_id=get_correlation_id(),
+            )
+            # Final error audit log
             audit_log(
                 "agent_error",
                 {
@@ -392,7 +439,7 @@ def run(
                 total_blocks=len(blocks),
                 preview=block[:200],
             )
-            callbacks.on_status(f"executing block {idx}/{len(blocks)}")
+            _log_status(f"executing block {idx}/{len(blocks)}", attempt_notifications, callbacks)
 
             if use_callbacks:
                 # Delegate execution to UI thread
@@ -429,7 +476,7 @@ def run(
                     error=block_error,
                     category=block_category,
                 )
-                callbacks.on_status(f"block {idx} failed: {block_feedback}")
+                _log_status(f"block {idx} failed: {block_feedback}", attempt_notifications, callbacks)
                 break
 
         total_rollback_count += block_rollback_count
@@ -444,8 +491,29 @@ def run(
                 new_objects=all_new_objects,
                 block_count=len(blocks),
             )
-            callbacks.on_status("execution succeeded")
-            # Audit log
+            _log_status("execution succeeded", attempt_notifications, callbacks)
+            # Per-attempt audit log
+            audit_log(
+                "agent_attempt",
+                {
+                    "attempt": attempts,
+                    "max_retries": MAX_RETRIES,
+                    "llm_response_preview": llm_text[:500],
+                    "code_preview": (blocks[0] if blocks else "")[:500],
+                    "ok": True,
+                    "error": None,
+                    "error_category": None,
+                    "new_object_names": all_new_objects,
+                    "block_count": len(blocks),
+                    "rollback_count": block_rollback_count,
+                    "notifications": attempt_notifications,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                },
+                correlation_id=get_correlation_id(),
+            )
+            # Final success audit log
             audit_log(
                 "agent_success",
                 {
@@ -484,7 +552,28 @@ def run(
                 error=last_error,
                 category=category,
             )
-            callbacks.on_status(f"execution failed: {feedback}")
+            _log_status(f"execution failed: {feedback}", attempt_notifications, callbacks)
+            # Per-attempt audit log
+            audit_log(
+                "agent_attempt",
+                {
+                    "attempt": attempts,
+                    "max_retries": MAX_RETRIES,
+                    "llm_response_preview": llm_text[:500],
+                    "code_preview": (blocks[0] if blocks else "")[:500],
+                    "ok": False,
+                    "error": last_error,
+                    "error_category": category,
+                    "new_object_names": all_new_objects,
+                    "block_count": len(blocks),
+                    "rollback_count": block_rollback_count,
+                    "notifications": attempt_notifications,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                },
+                correlation_id=get_correlation_id(),
+            )
             # Retry loop continues — blocked_token and unsupported_api are
             # self-correctable: feedback is already in history, LLM can fix on next attempt.
 

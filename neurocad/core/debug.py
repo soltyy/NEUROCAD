@@ -53,12 +53,11 @@ def log_error(stage: str, message: str, **fields: object) -> None:
 def log_notify(message: str, **fields: object) -> None:
     """Log a user-visible notification emitted during request processing.
 
-    Appears as a dedicated ``agent.notify`` line so UI events can be traced
-    separately from internal execution events.
-    Uses PrintLog so the entries are stored without cluttering the Report view.
+    Appears as a dedicated ``agent.notify`` line in the FreeCAD Report View
+    so UI events can be traced separately from internal execution events.
     """
     parts = ["agent.notify", message]
     if fields:
         parts.extend(f"{key}={_compact(value)}" for key, value in fields.items())
     parts.append(f"thread={threading.current_thread().name}")
-    _emit("PrintLog", " | ".join(parts))
+    _emit("PrintMessage", " | ".join(parts))
