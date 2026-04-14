@@ -173,12 +173,14 @@ def _make_feedback(error: str, category: str) -> str:
     if "sketchobject" in error_lower and "has no attribute 'support'" in error_lower:
         return (
             "Sketch attachment failed: 'Sketcher.SketchObject' has no attribute 'Support'. "
-            "Required order: (1) sk = doc.addObject('Sketcher::SketchObject', 'Name'); "
-            "(2) body.addObject(sk); (3) sk.Support = (body.Origin, ['XY_Plane']); "
+            "In FreeCAD 1.x the property was RENAMED: use sk.AttachmentSupport, NOT sk.Support. "
+            "Correct sequence: "
+            "(1) body = doc.addObject('PartDesign::Body', ...); doc.recompute(); "
+            "(2) sk = doc.addObject('Sketcher::SketchObject', ...); body.addObject(sk); "
+            "(3) sk.AttachmentSupport = (body.Origin, ['XY_Plane']); "
             "(4) sk.MapMode = 'FlatFace'. "
-            "Support MUST reference body.Origin planes ('XY_Plane'/'XZ_Plane'/'YZ_Plane') — "
-            "do NOT attach to faces of pads, sketches, or other features; face refs are "
-            "fragile in headless mode and cause TNP errors."
+            "Alternatively, avoid PartDesign::Body entirely and use Part WB "
+            "(Part::Revolution, Part::Extrusion) — more reliable in headless scripts."
         )
     return f"Execution failed: {error}"
 

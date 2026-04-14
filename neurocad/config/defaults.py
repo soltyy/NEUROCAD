@@ -63,27 +63,40 @@ Always finish with doc.recompute() when geometry is created or modified.
 ===========================================================================
 ## PART I — PartDesign workbench
 ===========================================================================
+#
+# WARNING — FreeCAD 1.0+ renamed sk.Support → sk.AttachmentSupport.
+# Using sk.Support on FreeCAD 1.x raises:
+#   'Sketcher.SketchObject' object has no attribute 'Support'
+# ALWAYS use sk.AttachmentSupport for FreeCAD 1.x.
+#
+# STRONG RECOMMENDATION: for generative / scripted shapes prefer Part WB (PART II).
+# PartDesign::Body is designed for interactive GUI use. Headless multi-sketch
+# scripts are fragile — use Part::Revolution, Part::Extrusion, Part::Fuse etc.
+# Only use PartDesign if you need the parametric feature history (Body chain).
 
 ### 1. Body and base sketch
 
 body = doc.addObject("PartDesign::Body", "Body")
+doc.recompute()   # REQUIRED: initializes body.Origin before accessing it
 
-# CRITICAL — Sketcher sketch attachment — two rules that BOTH cause the same error
-# if violated: 'Sketcher.SketchObject' object has no attribute 'Support'
+# CRITICAL — Sketcher sketch attachment — three rules:
 #
-# Rule 1 — Order:  addObject → body.addObject(sk) → sk.Support → sk.MapMode
-#   MapMode MUST come AFTER Support.
+# Rule 1 — Recompute body first (see above).
 #
-# Rule 2 — Target: Support MUST reference body.Origin planes, NOT faces of pads or other sketches.
-#   CORRECT:   sk.Support = (body.Origin, ["XY_Plane"])   ← always safe
-#   WRONG:     sk.Support = (pad, ["Face2"])               ← TNP: fragile/broken headless
-#   WRONG:     sk.Support = (other_sk, ["Face1"])          ← sketch is not a solid face
+# Rule 2 — Order:  addObject(sk) → body.addObject(sk) → sk.AttachmentSupport → sk.MapMode
+#   MapMode MUST come AFTER AttachmentSupport.
+#
+# Rule 3 — Target: AttachmentSupport MUST reference body.Origin planes,
+#   NOT faces of pads or other sketches.
+#   CORRECT:   sk.AttachmentSupport = (body.Origin, ["XY_Plane"])   ← always safe
+#   WRONG:     sk.AttachmentSupport = (pad, ["Face2"])               ← TNP: broken headless
+#   WRONG:     sk.Support = ...                                      ← wrong name in FreeCAD 1.x
 #
 # Available Origin plane names: "XY_Plane", "XZ_Plane", "YZ_Plane"
 sk = doc.addObject("Sketcher::SketchObject", "Sketch")
 body.addObject(sk)
-sk.Support = (body.Origin, ["XY_Plane"])   # STEP 3: Origin plane reference
-sk.MapMode = "FlatFace"                    # STEP 4: mode second (always after Support)
+sk.AttachmentSupport = (body.Origin, ["XY_Plane"])   # FreeCAD 1.x property name
+sk.MapMode = "FlatFace"                              # always after AttachmentSupport
 
 # Add geometry with Part objects + Sketcher constraints
 sk.addGeometry([
@@ -149,7 +162,7 @@ doc.recompute()
 
 sk2 = doc.addObject("Sketcher::SketchObject", "Sketch001")
 body.addObject(sk2)
-sk2.Support = (body.Origin, ["XZ_Plane"])
+sk2.AttachmentSupport = (body.Origin, ["XZ_Plane"])
 sk2.MapMode = "FlatFace"
 sk2.addGeometry([
     Part.LineSegment(FreeCAD.Vector( 0,0,0), FreeCAD.Vector(11,0,0)),
@@ -222,7 +235,7 @@ doc.recompute()
 # Sketch a profile on one side of the revolution axis, then revolve.
 sk_rev = doc.addObject("Sketcher::SketchObject", "SketchRev")
 body.addObject(sk_rev)
-sk_rev.Support = (body.Origin, ["XZ_Plane"])
+sk_rev.AttachmentSupport = (body.Origin, ["XZ_Plane"])
 sk_rev.MapMode = "FlatFace"
 # (add sawtooth or thread profile geometry here)
 doc.recompute()
@@ -258,8 +271,8 @@ for i, face in enumerate(pad.Shape.Faces):
 if face_name:
     sk_top = doc.addObject("Sketcher::SketchObject", "SketchTop")
     body.addObject(sk_top)
-    sk_top.Support  = (pad, [face_name])
-    sk_top.MapMode  = "FlatFace"
+    sk_top.AttachmentSupport = (pad, [face_name])   # FreeCAD 1.x; face-ref is TNP-fragile headless
+    sk_top.MapMode = "FlatFace"
     doc.recompute()
 
 ===========================================================================
@@ -293,6 +306,20 @@ cyl = doc.addObject("Part::Cylinder","Cylinder")
 cyl.Radius=5.0; cyl.Height=50.0
 cyl.Placement=FreeCAD.Placement(FreeCAD.Vector(65,15,0), FreeCAD.Rotation(0,0,0))
 doc.recompute()
+
+# RADIAL CYLINDER (spoke, pin, etc.) — cylinder height is along Z by default.
+# Rotating around Z does NOT change height direction — spokes stay vertical.
+# To lay a cylinder radially at angle `a` (degrees from X axis), rotate 90° around
+# the tangent axis (perpendicular to the radial direction in XY plane):
+#   a_rad = math.radians(angle)
+#   tangent = FreeCAD.Vector(-math.sin(a_rad), math.cos(a_rad), 0)
+#   obj.Placement = FreeCAD.Placement(start_pos, FreeCAD.Rotation(tangent, 90))
+# Example — spoke from hub_r to rim_r at angle a, centered at midpoint:
+#   hub_r = 25; rim_r = 300; length = rim_r - hub_r
+#   mid_r = (hub_r + rim_r) / 2
+#   start_pos = FreeCAD.Vector(mid_r * math.cos(a_rad), mid_r * math.sin(a_rad), 0)
+#   tangent = FreeCAD.Vector(-math.sin(a_rad), math.cos(a_rad), 0)
+#   spoke.Placement = FreeCAD.Placement(start_pos, FreeCAD.Rotation(tangent, 90))
 
 sph = doc.addObject("Part::Sphere","Sphere")
 sph.Radius=12.0
@@ -394,6 +421,12 @@ mn.Visibility=False; tf.Visibility=False; doc.recompute()
 
 ### Fillet and chamfer — TNP-safe edge selection
 # Edge indices (1-based) are UNSTABLE after booleans. NEVER hardcode. Derive geometrically.
+#
+# CRITICAL — do NOT use edge.Vertexes[0] / edge.Vertexes[1] with direct index access.
+# Circular/arc edges (e.g. after Part::Revolution or Part::Torus) are closed loops and
+# have only ONE entry in Vertexes → edge.Vertexes[1] raises IndexError: list index out of range.
+# ALWAYS iterate with `for v in edge.Vertexes` (any length), never index past [0].
+# The helpers below are safe — they use `all(... for v in e.Vertexes)`.
 
 def top_edges(shape, z_tol=0.1):
     zmax=shape.BoundBox.ZMax
