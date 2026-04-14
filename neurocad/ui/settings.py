@@ -133,7 +133,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._provider_combo.setCurrentText(self._config.get("provider", "openai"))
         self._model_edit.setText(self._config.get("model", "gpt-4o-mini"))
         self._base_url_edit.setText(self._config.get("base_url", ""))
-        self._timeout_spin.setValue(float(self._config.get("timeout", 120.0)))
+        self._timeout_spin.setValue(float(self._config.get("timeout", 180.0)))
         self._max_objects_spin.setValue(int(self._config.get("max_created_objects", 1000)))
         # API key is not stored in config; leave blank
         self._api_key_edit.clear()

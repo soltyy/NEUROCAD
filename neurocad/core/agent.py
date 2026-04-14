@@ -2,6 +2,7 @@
 
 import re
 import threading
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -200,6 +201,7 @@ def _execute_with_rollback(code: str, doc) -> ExecResult:
             "agent.exec",
             "unexpected exception during execution, aborting transaction",
             error=e,
+            traceback=traceback.format_exc(),
         )
         doc.abortTransaction()  # type: ignore
         return ExecResult(ok=False, new_objects=[], error=f"Unexpected error: {e}")

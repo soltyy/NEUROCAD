@@ -199,7 +199,7 @@ def test_submit_uses_configured_llm_timeout_for_watchdog(qapp):
 
         neurocad.ui.panel._panel_dock = None
         dock = CopilotPanel()
-        dock._config = {"timeout": 120.0}
+        dock._config = {"timeout": 180.0}
         dock._add_message = MagicMock()
         dock._set_busy = MagicMock()
         dock._input = MagicMock()
@@ -218,7 +218,7 @@ def test_submit_uses_configured_llm_timeout_for_watchdog(qapp):
 
             dock._on_submit()
 
-        dock._request_watchdog.start.assert_called_once_with(120000)
+        dock._request_watchdog.start.assert_called_once_with(180000)
 
 
 def test_panel_shows_compact_statuses(qapp):

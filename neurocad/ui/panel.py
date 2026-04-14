@@ -359,7 +359,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
 
     def _llm_timeout_ms(self) -> int:
         """Return configured LLM timeout in milliseconds for the UI watchdog."""
-        timeout_s = float(self._config.get("timeout", 120.0))
+        timeout_s = float(self._config.get("timeout", 180.0))
         return max(1000, int(timeout_s * 1000))
 
     def _connect_signals(self):

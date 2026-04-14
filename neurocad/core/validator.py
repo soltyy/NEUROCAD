@@ -29,16 +29,24 @@ def validate(obj) -> ValidationResult:
             )
 
     # Stage 2: check Shape
-    if not hasattr(obj, "Shape"):
+    # Determine which shape to validate
+    shape_to_check = None
+    # For PartDesign::Body, use Tip.Shape if available
+    is_partdesign_body = hasattr(obj, "TypeId") and isinstance(obj.TypeId, str) and "PartDesign::Body" in obj.TypeId
+    if is_partdesign_body and hasattr(obj, "Tip") and obj.Tip is not None and hasattr(obj.Tip, "Shape") and obj.Tip.Shape is not None:
+        shape_to_check = obj.Tip.Shape
+    elif hasattr(obj, "Shape") and obj.Shape is not None:
+        shape_to_check = obj.Shape
+    
+    if shape_to_check is None:
         return ValidationResult(ok=True)  # no shape to validate
-
-    shape = obj.Shape
-    if shape.isNull():
+    
+    if shape_to_check.isNull():
         return ValidationResult(ok=False, error="Shape is null")
-    if not shape.isValid():
+    if not shape_to_check.isValid():
         return ValidationResult(ok=False, error="Shape is invalid")
-
+    
     # Additional check: shape type (optional)
     # Could also check volume > 0 etc.
-
+    
     return ValidationResult(ok=True)

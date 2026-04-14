@@ -6,6 +6,7 @@ from typing import Any
 
 from neurocad.config.defaults import (
     DEFAULT_AUDIT_LOG_ENABLED,
+    DEFAULT_SNAPSHOT_MAX_CHARS,
 )
 
 try:
@@ -16,7 +17,7 @@ except ImportError:
 
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_TIMEOUT = 120.0
+DEFAULT_TIMEOUT = 180.0
 DEFAULT_MAX_CREATED_OBJECTS = 1000
 
 
@@ -57,6 +58,7 @@ def load() -> dict[str, Any]:
             "timeout": DEFAULT_TIMEOUT,
             "max_created_objects": DEFAULT_MAX_CREATED_OBJECTS,
             "audit_log_enabled": DEFAULT_AUDIT_LOG_ENABLED,
+            "snapshot_max_chars": DEFAULT_SNAPSHOT_MAX_CHARS,
         }
 
     with open(config_file, encoding="utf-8") as f:
@@ -67,6 +69,7 @@ def load() -> dict[str, Any]:
     data.setdefault("timeout", DEFAULT_TIMEOUT)
     data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
     data.setdefault("audit_log_enabled", DEFAULT_AUDIT_LOG_ENABLED)
+    data.setdefault("snapshot_max_chars", DEFAULT_SNAPSHOT_MAX_CHARS)
     return data
 
 

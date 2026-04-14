@@ -106,7 +106,49 @@ For tests that need a QApplication (UI), `pytest-qt` provides a `qapp` fixture.
 3. The NeuroCad panel will appear as a dock widget on the right side (lazy‑initialized when the workbench is activated).
 4. The NeuroCad workbench now includes full LLM‑powered geometry generation, multi‑step execution, secure key management, and audit logging. For a detailed list of features, see the sprint plans in `doc/SPRINT_PLANS.md`.
 
-## 8. Development workflow
+## 8. Configuration
+
+NeuroCad stores its configuration in a JSON file located at `<FreeCAD user data>/neurocad/config.json`. The configuration can be edited manually or via the Settings dialog inside FreeCAD.
+
+### Key configuration keys
+
+- `provider` – LLM provider (`"openai"` or `"anthropic"`).
+- `model` – model identifier (e.g., `"gpt-4o-mini"`, `"claude-3-haiku-20240307"`).
+- `base_url` – optional base URL for OpenAI‑compatible endpoints.
+- **`timeout`** – LLM request timeout in seconds (default: `180.0`).
+- `max_created_objects` – maximum number of geometry objects that can be created in a single request (default: `1000`).
+- `audit_log_enabled` – whether to write audit logs (default: `true`).
+- `snapshot_max_chars` – maximum number of characters sent in the document snapshot (default: `1500`).
+
+### Changing the timeout
+
+The timeout can be adjusted in two ways:
+
+1. **Via the Settings UI** – open the NeuroCad workbench, click the settings icon, and modify the “LLM timeout (s)” field.
+2. **Via the config file** – edit `config.json` and set the `"timeout"` value (floating‑point number).
+
+Example `config.json`:
+```json
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "timeout": 240.0,
+  "max_created_objects": 1000,
+  "audit_log_enabled": true,
+  "snapshot_max_chars": 1500
+}
+```
+
+### Default values
+
+If a key is missing from the config file, the following defaults are used (defined in `neurocad/config/config.py` and `neurocad/config/defaults.py`):
+
+- `DEFAULT_TIMEOUT` = 180.0
+- `DEFAULT_SNAPSHOT_MAX_CHARS` = 1500
+- `DEFAULT_MAX_CREATED_OBJECTS` = 1000
+- `DEFAULT_AUDIT_LOG_ENABLED` = true
+
+## 9. Development workflow
 
 - All UI imports must go through `neurocad.ui.compat.py` (PySide2/PySide6 shim).
 - Never call `addDockWidget` inside `Initialize()`; use `get_panel_dock()` singleton.
@@ -114,7 +156,7 @@ For tests that need a QApplication (UI), `pytest-qt` provides a `qapp` fixture.
 - Config path is determined by `_get_config_dir()` with fallback (FreeCAD.ConfigGet, XDG, legacy).
 - Transaction name is always `"NeuroCAD"`.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 **`ModuleNotFoundError: No module named 'FreeCAD'`**  
 Ensure `PYTHONPATH` includes the FreeCAD bundle library path.
@@ -133,4 +175,4 @@ Run tests with `QT_QPA_PLATFORM=offscreen pytest ...` or ensure a virtual displa
 
 ---
 
-*Last updated: 2026-04-12*
+*Last updated: 2026-04-14*

@@ -69,4 +69,43 @@ No special rollback needed. If a revert is required, revert the five changed fil
 
 ---
 
+# Release Notes – LLM Timeout & Snapshot Limit Increase
+
+**Date:** 2026‑04‑14
+**Based on:** User‑reported timeout errors and analysis of LLM response patterns.
+
+## PR Summary
+Increased default LLM timeout from 120 to 180 seconds to accommodate longer‑running model responses. The timeout is now configurable via Settings UI and config file. Also increased the snapshot character limit from 1000 to 1500 to provide more context to the LLM.
+
+## User‑visible changes
+- **Default LLM timeout raised** from 120 s to 180 s.
+- **Timeout configurability** – the value can be adjusted in Settings → “LLM timeout (s)”.
+- **Snapshot character limit raised** from 1000 to 1500 characters, providing richer document context to the LLM.
+
+## Migration / rollout notes
+- No breaking changes; existing config files will keep their current `timeout` and `snapshot_max_chars` values.
+- New installations and config‑less runs will use the increased defaults automatically.
+- No new environment variables or configuration keys are required.
+- **None**
+
+## Rollback notes
+If a revert is required, revert the following files:
+- `neurocad/config/config.py` – `DEFAULT_TIMEOUT` and imports
+- `neurocad/config/defaults.py` – `DEFAULT_SNAPSHOT_MAX_CHARS`
+- `neurocad/llm/anthropic.py` – `timeout` parameter in constructor
+- `neurocad/llm/openai.py` – `timeout` parameter in constructor
+- `neurocad/ui/settings.py` – default value in `_load_current`
+- `neurocad/ui/panel.py` – `_llm_timeout_ms` default
+- `tests/test_agent.py` – updated test expectations
+
+No special rollback steps beyond reverting the code.
+
+## Manual verification checklist
+- [ ] Open FreeCAD, activate NeuroCad workbench, open Settings.
+- [ ] Verify that the “LLM timeout (s)” field shows 180.0 by default.
+- [ ] Submit a prompt that triggers a long‑running LLM request (e.g., “generate a complex parametric model”) and confirm the request does not time out before 180 s.
+- [ ] Use the “Show Snapshot” button and inspect the printed snapshot; verify that the snapshot length is capped at approximately 1500 characters.
+
+---
+
 *These notes are intended for developers, QA, and deployment teams. For end‑user documentation, see the updated `README.md` and `DEV_SETUP.md`.*

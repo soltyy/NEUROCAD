@@ -12,6 +12,7 @@ class ObjectInfo:
     volume_mm3: float | None = None
     placement: str | None = None
     visible: bool = True
+    priority: int = 0
     properties: dict[str, float] = field(default_factory=dict)
 
 
@@ -76,17 +77,28 @@ def capture(doc) -> DocSnapshot:
     if doc is None:
         return DocSnapshot(filename="Untitled")
 
+    active = doc.ActiveObject.Name if hasattr(doc, "ActiveObject") and doc.ActiveObject else None
+
     objects = []
     for obj in doc.Objects:
         shape_type = None
         volume_mm3 = None
-        if hasattr(obj, "Shape") and obj.Shape is not None:
-            shape = obj.Shape
-            if not shape.isNull():
-                shape_type = shape.ShapeType
-                if hasattr(shape, "Volume"):
-                    # Volume is in mm³ for metric parts
-                    volume_mm3 = shape.Volume
+        # For PartDesign::Body, try to use Tip.Shape
+        if hasattr(obj, "TypeId") and isinstance(obj.TypeId, str) and "PartDesign::Body" in obj.TypeId:
+            if hasattr(obj, "Tip") and obj.Tip is not None and hasattr(obj.Tip, "Shape"):
+                shape = obj.Tip.Shape
+                if shape is not None and not shape.isNull():
+                    shape_type = shape.ShapeType
+                    if hasattr(shape, "Volume"):
+                        volume_mm3 = shape.Volume
+        # For all other objects, use Shape directly
+        if shape_type is None and volume_mm3 is None:
+            if hasattr(obj, "Shape") and obj.Shape is not None:
+                shape = obj.Shape
+                if not shape.isNull():
+                    shape_type = shape.ShapeType
+                    if hasattr(shape, "Volume"):
+                        volume_mm3 = shape.Volume
 
         placement = None
         if hasattr(obj, "Placement"):
@@ -96,6 +108,14 @@ def capture(doc) -> DocSnapshot:
                 placement = str(obj.Placement)
 
         visible = bool(getattr(obj, "Visibility", True))
+
+        # Determine priority
+        if active is not None and obj.Name == active:
+            priority = 2
+        elif visible:
+            priority = 1
+        else:
+            priority = 0
 
         # Collect geometric properties
         props = {}
@@ -117,10 +137,9 @@ def capture(doc) -> DocSnapshot:
             volume_mm3=volume_mm3,
             placement=placement,
             visible=visible,
+            priority=priority,
             properties=props,
         ))
-
-    active = doc.ActiveObject.Name if hasattr(doc, "ActiveObject") and doc.ActiveObject else None
 
     return DocSnapshot(
         filename=doc.Name,
@@ -138,8 +157,13 @@ def to_prompt_str(snap: DocSnapshot, max_chars: int = 2000) -> str:
         lines.append(f"Active object: {snap.active_object}")
 
     if snap.objects:
-        lines.append("Objects:")
-        for obj in snap.objects:
+        # Sort objects by priority descending, then by name
+        sorted_objects = sorted(
+            snap.objects,
+            key=lambda obj: (-obj.priority, obj.name)
+        )
+        lines.append("Objects (sorted by priority: active → visible → hidden):")
+        for obj in sorted_objects:
             line = f"  - {obj.name} ({obj.type_id})"
             if obj.shape_type:
                 line += f" [{obj.shape_type}]"
@@ -161,12 +185,21 @@ def to_prompt_str(snap: DocSnapshot, max_chars: int = 2000) -> str:
         candidate = "\n".join(kept_lines + [line])
         remaining = len(lines) - i - 1
         suffix = f"\n... {remaining} more line(s) omitted." if remaining > 0 else ""
+        # Determine if this line corresponds to an active object (priority 2)
+        is_active = False
+        if snap.active_object and snap.active_object in line:
+            # Heuristic: line contains active object name
+            is_active = True
         if len(candidate + suffix) > max_chars:
-            if not kept_lines:
-                return line[: max_chars - 3] + "..."
-            if remaining > 0:
-                kept_lines.append(f"... {remaining} more line(s) omitted.")
-            break
+            if is_active and len(candidate + suffix) <= int(max_chars * 1.2):
+                # Allow up to 20% overflow for active object
+                pass  # continue to add line
+            else:
+                if not kept_lines:
+                    return line[: max_chars - 3] + "..."
+                if remaining > 0:
+                    kept_lines.append(f"... {remaining} more line(s) omitted.")
+                break
         kept_lines.append(line)
 
     return "\n".join(kept_lines)

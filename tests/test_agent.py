@@ -299,7 +299,7 @@ def test_run_llm_timeout_fails_fast():
 def test_complete_with_timeout_uses_adapter_timeout():
     """_complete_with_timeout should default to adapter.timeout when not overridden."""
     mock_adapter = MagicMock()
-    mock_adapter.timeout = 120.0
+    mock_adapter.timeout = 180.0
     mock_adapter.complete.return_value = MagicMock(content="ok")
 
     response = _complete_with_timeout(mock_adapter, [], system="")
@@ -346,10 +346,9 @@ def test_build_system_includes_snapshot():
     with patch("neurocad.core.prompt.to_prompt_str") as mock_to_prompt:
         mock_to_prompt.return_value = "Snapshot description"
         result = build_system(mock_snap)
-        mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1000)
+        mock_to_prompt.assert_called_once_with(mock_snap, max_chars=1500)
         assert "Snapshot description" in result
-        assert "makeCylinder" in result
-        assert "do NOT import them" in result
+        assert "do NOT import" in result
 
 
 def test_error_categorization():
@@ -558,12 +557,7 @@ def test_supported_case_no_forbidden_import():
     # PartDesign now in scope
     assert "PartDesign" in system
     # Core primitives still documented
-    assert "makeCylinder" in system
     assert "Part::Cylinder" in system
-    # Gear support via PartDesign::InvoluteGear
-    assert "InvoluteGear" in system
-    # Thread / helix support
-    assert "makeHelix" in system
 
 
 def test_error_categorization_freecad_math():

@@ -31,7 +31,7 @@ class AnthropicAdapter(LLMAdapter):
                 "Anthropic SDK not installed. Run `pip install anthropic`."
             ) from e
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout)
         extra_kwargs = {}
         if tools is not None:
             extra_kwargs["tools"] = tools
@@ -60,7 +60,7 @@ class AnthropicAdapter(LLMAdapter):
                 "Anthropic SDK not installed. Run `pip install anthropic`."
             ) from e
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout)
         stream = client.messages.create(
             model=self.model,
             system=system,

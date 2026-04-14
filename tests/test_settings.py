@@ -38,7 +38,7 @@ def test_collect_config():
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = "https://api.anthropic.com"
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()
@@ -49,7 +49,7 @@ def test_collect_config():
         "provider": "anthropic",
         "model": "claude-3-5-sonnet",
         "base_url": "https://api.anthropic.com",
-        "timeout": 120.0,
+        "timeout": 180.0,
         "max_created_objects": 1000,
     }
     assert key == "secret-key"
@@ -63,7 +63,7 @@ def test_collect_config():
     # max_created_objects still present (has default)
     assert config["max_created_objects"] == 1000
     assert config["provider"] == "anthropic"
-    assert config["timeout"] == 120.0
+    assert config["timeout"] == 180.0
 
 
 def test_on_save_with_keyring(qapp):
@@ -79,7 +79,7 @@ def test_on_save_with_keyring(qapp):
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()
@@ -95,7 +95,7 @@ def test_on_save_with_keyring(qapp):
         mock_save.assert_called_once_with({
             "provider": "openai",
             "model": "gpt-4o",
-            "timeout": 120.0,
+            "timeout": 180.0,
             "max_created_objects": 1000,
         })
         # Verify API key saved
@@ -115,7 +115,7 @@ def test_on_save_without_keyring(qapp):
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()
@@ -131,7 +131,7 @@ def test_on_save_without_keyring(qapp):
         dialog._on_save()
         # Config still saved
         mock_save.assert_called_once_with(
-            {"provider": "openai", "timeout": 120.0, "max_created_objects": 1000}
+            {"provider": "openai", "timeout": 180.0, "max_created_objects": 1000}
         )
         # Warning message shown
         mock_warning.assert_called_once()
@@ -147,7 +147,7 @@ def test_on_use_once(qapp):
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()
@@ -166,7 +166,7 @@ def test_on_use_once(qapp):
             {
                 "provider": "openai",
                 "model": "gpt-4o",
-                "timeout": 120.0,
+                "timeout": 180.0,
                 "max_created_objects": 1000,
             },
             "session-key"
@@ -191,7 +191,7 @@ def test_load_current(qapp):
         "provider": "anthropic",
         "model": "claude-3-5-sonnet",
         "base_url": "https://api.anthropic.com",
-        "timeout": 120.0,
+        "timeout": 180.0,
     }
 
     dialog._load_current()
@@ -201,7 +201,7 @@ def test_load_current(qapp):
     dialog._model_edit.setText.assert_called_once_with("claude-3-5-sonnet")
     # Base URL line edit set
     dialog._base_url_edit.setText.assert_called_once_with("https://api.anthropic.com")
-    dialog._timeout_spin.setValue.assert_called_once_with(120.0)
+    dialog._timeout_spin.setValue.assert_called_once_with(180.0)
     # API key line edit cleared
     dialog._api_key_edit.clear.assert_called_once_with()
 
@@ -218,7 +218,7 @@ def test_load_current_no_keyring(qapp):
 
     dialog._load_current()
     # API key line edit cleared (no placeholder set)
-    dialog._timeout_spin.setValue.assert_called_once_with(120.0)
+    dialog._timeout_spin.setValue.assert_called_once_with(180.0)
     dialog._api_key_edit.clear.assert_called_once_with()
 
 
@@ -279,13 +279,13 @@ def test_settings_max_created_objects_default(qapp):
     dialog._provider_combo.currentText.return_value = "openai"
     dialog._model_edit.text.return_value = ""
     dialog._base_url_edit.text.return_value = ""
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit.text.return_value = ""
 
     config, key = dialog._collect_config()
     assert config["max_created_objects"] == 1000
-    assert config["timeout"] == 120.0
+    assert config["timeout"] == 180.0
 
 def test_missing_keyring_env_var_fallback(qapp):
     """_on_use_once works when keyring missing but environment variable supplies key."""
@@ -300,7 +300,7 @@ def test_missing_keyring_env_var_fallback(qapp):
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()
@@ -321,7 +321,7 @@ def test_missing_keyring_env_var_fallback(qapp):
                 {
                     "provider": "openai",
                     "model": "gpt-4o",
-                    "timeout": 120.0,
+                    "timeout": 180.0,
                     "max_created_objects": 1000,
                 },
                 "session-key"
@@ -343,7 +343,7 @@ def test_session_key_not_persisted(qapp):
     dialog._base_url_edit = MagicMock()
     dialog._base_url_edit.text.return_value = ""
     dialog._timeout_spin = MagicMock()
-    dialog._timeout_spin.value.return_value = 120.0
+    dialog._timeout_spin.value.return_value = 180.0
     dialog._max_objects_spin = MagicMock()
     dialog._max_objects_spin.value.return_value = 1000
     dialog._api_key_edit = MagicMock()

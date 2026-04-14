@@ -57,7 +57,7 @@ def test_load_missing_file():
         config = load()
     assert config["provider"] == "openai"
     assert config["model"] == "gpt-4o-mini"
-    assert config["timeout"] == 120.0
+    assert config["timeout"] == 180.0
 
 
 def test_load_existing_file():
@@ -70,12 +70,12 @@ def test_load_existing_file():
         config = load()
     assert config["provider"] == "anthropic"
     assert config["model"] == "claude-3-haiku"
-    assert config["timeout"] == 120.0
+    assert config["timeout"] == 180.0
 
 
 def test_save_omits_api_key():
     """save() should never write api_key to disk."""
-    config = {"provider": "openai", "api_key": "sk-secret", "model": "gpt-4", "timeout": 120.0}
+    config = {"provider": "openai", "api_key": "sk-secret", "model": "gpt-4", "timeout": 180.0}
     mock_file = mock_open()
     with patch.object(Path, "mkdir"), patch("builtins.open", mock_file):
         save(config)
@@ -85,7 +85,7 @@ def test_save_omits_api_key():
     assert "api_key" not in parsed
     assert parsed["provider"] == "openai"
     assert parsed["model"] == "gpt-4"
-    assert parsed["timeout"] == 120.0
+    assert parsed["timeout"] == 180.0
 
 
 def test_save_api_key_calls_keyring():
@@ -116,7 +116,7 @@ def test_load_includes_max_created_objects():
 
 def test_save_includes_max_created_objects():
     """save() should write max_created_objects."""
-    config = {"provider": "openai", "model": "gpt-4", "timeout": 120.0, "max_created_objects": 500}
+    config = {"provider": "openai", "model": "gpt-4", "timeout": 180.0, "max_created_objects": 500}
     mock_file = mock_open()
     with patch.object(Path, "mkdir"), patch("builtins.open", mock_file):
         save(config)
