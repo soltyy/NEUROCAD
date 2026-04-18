@@ -33,48 +33,40 @@ def test_mock_adapter():
 
 
 def test_load_adapter_missing_key_raises():
-    """load_adapter() raises ValueError when no API key is found."""
-    mock_keyring = MagicMock()
-    mock_keyring.get_password.return_value = None
+    """load_adapter() raises ValueError when no API key is found in any backend."""
     with patch.dict("os.environ", {}, clear=True), \
-         patch("neurocad.llm.registry.keyring", mock_keyring), \
+         patch("neurocad.llm.registry.key_storage.load_key",
+               return_value=(None, None)), \
          pytest.raises(ValueError, match="No API key found"):
         load_adapter({"provider": "openai"})
 
 
 def test_api_key_precedence_order():
-    """Verify precedence: session key → environment variable → keyring."""
+    """Sprint 5.15: precedence = session → env var → key_storage.load_key()."""
     MockOpenAI = MagicMock()
-    mock_keyring = MagicMock()
-    mock_keyring.get_password.return_value = "keyring-key"
-    with patch.dict("os.environ", {"NEUROCAD_API_KEY_OPENAI": "env-key"}):
-        with patch("neurocad.llm.registry.keyring", mock_keyring):
-            with patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
-                # 1. Session key overrides env var and keyring
-                load_adapter({"provider": "openai"}, session_key="session-key")
-                assert MockOpenAI.call_count == 1
-                call_kwargs = MockOpenAI.call_args[1]
-                assert call_kwargs["api_key"] == "session-key"
-                mock_keyring.get_password.assert_not_called()
-                MockOpenAI.reset_mock()
-                mock_keyring.get_password.reset_mock()
+    with patch.dict("os.environ", {"NEUROCAD_API_KEY_OPENAI": "env-key"}), \
+         patch("neurocad.llm.registry.key_storage.load_key",
+               return_value=("storage-key", "FakeBackend")) as mock_load, \
+         patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+        # 1. Session key wins over env var and storage
+        load_adapter({"provider": "openai"}, session_key="session-key")
+        assert MockOpenAI.call_args[1]["api_key"] == "session-key"
+        mock_load.assert_not_called()
+        MockOpenAI.reset_mock()
+        mock_load.reset_mock()
 
-                # 2. Env var overrides keyring when session key is None
-                load_adapter({"provider": "openai"}, session_key=None)
-                assert MockOpenAI.call_count == 1
-                call_kwargs = MockOpenAI.call_args[1]
-                assert call_kwargs["api_key"] == "env-key"
-                mock_keyring.get_password.assert_not_called()
-                MockOpenAI.reset_mock()
-                mock_keyring.get_password.reset_mock()
+        # 2. Env var wins over storage when no session key
+        load_adapter({"provider": "openai"}, session_key=None)
+        assert MockOpenAI.call_args[1]["api_key"] == "env-key"
+        mock_load.assert_not_called()
+        MockOpenAI.reset_mock()
+        mock_load.reset_mock()
 
-                # 3. Keyring used when env var missing
-                with patch.dict("os.environ", {}, clear=True):
-                    load_adapter({"provider": "openai"})
-                    assert MockOpenAI.call_count == 1
-                    call_kwargs = MockOpenAI.call_args[1]
-                    assert call_kwargs["api_key"] == "keyring-key"
-                    mock_keyring.get_password.assert_called_once_with("neurocad", "openai")
+        # 3. Fall through to key_storage when env var missing
+        with patch.dict("os.environ", {}, clear=True):
+            load_adapter({"provider": "openai"})
+            assert MockOpenAI.call_args[1]["api_key"] == "storage-key"
+            mock_load.assert_called_once_with("openai")
 
 
 def test_load_adapter_env_key():
@@ -83,66 +75,54 @@ def test_load_adapter_env_key():
     with patch.dict("os.environ", {"NEUROCAD_API_KEY_OPENAI": "env-key"}), \
          patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
         load_adapter({"provider": "openai", "model": "test"})
-        # Check that the adapter was instantiated with correct api_key and model
         assert MockOpenAI.call_count == 1
         call_kwargs = MockOpenAI.call_args[1]
         assert call_kwargs["api_key"] == "env-key"
         assert call_kwargs["model"] == "test"
-        # base_url, max_tokens, temperature are optional and default to class defaults
-        # They may not be present in kwargs if not specified in config
 
 
-def test_load_adapter_keyring_key():
-    """load_adapter() falls back to keyring when env var is empty."""
+def test_load_adapter_falls_back_to_key_storage():
+    """Sprint 5.15: load_adapter() falls back to key_storage.load_key when env var missing."""
     MockOpenAI = MagicMock()
-    with patch.dict("os.environ", {}):
-        mock_keyring = MagicMock()
-        mock_keyring.get_password.return_value = "keyring-key"
-        with patch("neurocad.llm.registry.keyring", mock_keyring), \
-             patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
-            load_adapter({"provider": "openai"})
-            assert MockOpenAI.call_count == 1
-            call_kwargs = MockOpenAI.call_args[1]
-            assert call_kwargs["api_key"] == "keyring-key"
-            # model may not be present in kwargs; if present it should be default
-            if "model" in call_kwargs:
-                assert call_kwargs["model"] == "gpt-4o-mini"
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("neurocad.llm.registry.key_storage.load_key",
+               return_value=("stored-key", "macOS Keychain")), \
+         patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+        load_adapter({"provider": "openai"})
+        assert MockOpenAI.call_args[1]["api_key"] == "stored-key"
 
 
-def test_load_adapter_with_session_key():
-    """load_adapter_with_session_key() uses session key and does not call keyring."""
+def test_load_adapter_with_session_key_skips_storage():
+    """load_adapter_with_session_key uses session key, never consults key_storage."""
     MockOpenAI = MagicMock()
-    mock_keyring = MagicMock()
-    with patch("neurocad.llm.registry.keyring", mock_keyring), \
+    with patch("neurocad.llm.registry.key_storage.load_key") as mock_load, \
          patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
         load_adapter_with_session_key(
             {"provider": "openai", "model": "custom"},
-            session_key="temp-key"
+            session_key="temp-key",
         )
-        # keyring.get_password should NOT be called
-        mock_keyring.get_password.assert_not_called()
-        assert MockOpenAI.call_count == 1
-        call_kwargs = MockOpenAI.call_args[1]
-        assert call_kwargs["api_key"] == "temp-key"
-        assert call_kwargs["model"] == "custom"
+        mock_load.assert_not_called()
+        assert MockOpenAI.call_args[1]["api_key"] == "temp-key"
+        assert MockOpenAI.call_args[1]["model"] == "custom"
 
 
-def test_load_adapter_with_session_key_no_keyring_write():
-    """load_adapter_with_session_key does not write to keyring."""
+def test_load_adapter_with_session_key_does_not_persist():
+    """load_adapter_with_session_key does not call key_storage.save_key."""
     MockOpenAI = MagicMock()
-    mock_keyring = MagicMock()
-    with patch("neurocad.llm.registry.keyring", mock_keyring):
-        # The function should not call set_password
-        # We'll just call load_adapter_with_session_key and ensure set_password not called
-        with patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
-            load_adapter_with_session_key({"provider": "openai"}, "temp")
-        mock_keyring.set_password.assert_not_called()
+    with patch("neurocad.config.key_storage.save_key") as mock_save, \
+         patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+        load_adapter_with_session_key({"provider": "openai"}, "temp")
+    mock_save.assert_not_called()
 
 
-def test_load_adapter_missing_keyring_still_raises_clear_error():
-    """Missing keyring should not crash import; resolution should fail clearly."""
-    with patch.dict("os.environ", {}, clear=True), patch("neurocad.llm.registry.keyring", None), \
-         pytest.raises(ValueError, match="install the `keyring` package"):
+def test_load_adapter_no_storage_backends_raises_clear_error():
+    """Sprint 5.15: clear error lists available backends (never mentions 'install keyring')."""
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("neurocad.llm.registry.key_storage.load_key",
+               return_value=(None, None)), \
+         patch("neurocad.llm.registry.key_storage.available_backends",
+               return_value=[]), \
+         pytest.raises(ValueError, match="No API key found"):
         load_adapter({"provider": "openai"})
 
 

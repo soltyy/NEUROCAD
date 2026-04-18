@@ -934,6 +934,43 @@ revolution.Solid   = True
 rev_profile.Visibility = False
 doc.recompute()
 
+### Fillet/galtel transitions in Revolution profiles — use the SAFE BEVEL HELPER
+#
+# When a revolution profile steps between two radii (e.g. a shaft with sections
+# at r=65 → r=82.5), do NOT try to compute arc centres by hand. Hand-rolled arc
+# parameterisations almost always place the first arc vertex OFF the preceding
+# straight segment (wrong centre for non-tangent geometries), which creates a
+# self-intersecting wire and a subsequent `shape is invalid` on Revolution.
+#
+# SAFE FALLBACK — linear bevel through N intermediate points. Never
+# self-intersects, no arc-centre math required, works for ANY pair of
+# (r_start, z_start) → (r_end, z_end):
+def fillet_arc_points(r_start, z_start, r_end, z_end, n_pts=7):
+    # Return a list of (z, r) tuples linearly interpolating the transition.
+    # n_pts includes both endpoints. 7 gives a visibly rounded bevel.
+    return [
+        (z_start + i / (n_pts - 1) * (z_end - z_start),
+         r_start + i / (n_pts - 1) * (r_end - r_start))
+        for i in range(n_pts)
+    ]
+# Usage in a stepped-shaft profile:
+#   profile_pts = [(0, 0), (0, 65)]                 # close axis → first radius
+#   profile_pts += [(z_end, 65) for z_end in [205]] # straight neck
+#   profile_pts += fillet_arc_points(65, 205, 82.5, 235)   # SAFE bevel
+#   profile_pts += [(235, 82.5), (305, 82.5)]       # next straight
+#   # ... mirror, then close back to the axis
+#   wire = Part.makePolygon([FreeCAD.Vector(r, 0, z) for z, r in profile_pts])
+#   assert wire.isValid(), "profile wire has self-intersections or open ends"
+#   rev = doc.addObject("Part::Revolution", "Shaft")
+#   rev.Source = Part::Feature with Shape = Part.Face(wire)
+#   rev.Axis = FreeCAD.Vector(0, 0, 1); rev.Angle = 360.0; rev.Solid = True
+#
+# If a TRUE tangent-fillet with a specific radius R is required, the user
+# must supply the control point where the fillet meets each adjacent segment
+# tangentially — otherwise R does not fit the step, and any arc you fabricate
+# will either under- or over-shoot. In that case, prefer the bevel above and
+# note in a comment that the geometry does not admit a true R-fillet.
+
 ### Fake thread via stacked discs (Python loop — Part::LinearPattern does NOT exist in Part WB)
 # 1. Create sawtooth sketch profile (one tooth per revolution, offset from axis)
 # 2. Revolution 360° → disc with tooth profile (call this `tooth_ring`)

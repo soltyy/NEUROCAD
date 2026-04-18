@@ -146,6 +146,41 @@ def _make_feedback(
     if category == "validation":
         error_lower = error.lower()
         if "shape is invalid" in error_lower:
+            # If the invalid object is a Part::Revolution / its profile /
+            # its wire — give revolution-specific hints (self-intersecting
+            # profile wire is a far more common root cause than OCCT sweep
+            # / boolean issues in this case).
+            name_re = _re_search_invalid_name(error)
+            is_revolution_object = (
+                name_re
+                and any(token in name_re.lower()
+                        for token in ("revolution", "revolved", "axis",
+                                      "profile", "wire", "ring"))
+            )
+            if is_revolution_object:
+                return (
+                    "Validation failed: shape is invalid on a Part::Revolution "
+                    "or its 2D profile. OCCT rejects the revolved result because "
+                    "the input wire is malformed. Checklist: "
+                    "(1) Call `profile_wire.isValid()` BEFORE `Part.Face(wire)` — "
+                    "catch self-intersection early; "
+                    "(2) The polygon must be CLOSED (last vertex == first vertex), "
+                    "with vertices ordered consistently (all CCW or all CW); "
+                    "(3) All points MUST lie on ONE side of the rotation axis — "
+                    "if your profile is in the XZ plane revolving around Z, every "
+                    "vertex must have `x >= 0`; crossing the axis produces a "
+                    "self-intersecting solid; "
+                    "(4) Fillet/galtel approximations via arc points often place "
+                    "the first point OFF the adjacent segment (wrong arc centre) — "
+                    "double-check that each arc's START equals the previous "
+                    "straight segment's END, exactly, to the last decimal. When "
+                    "in doubt, use a linear bevel (see `fillet_arc_points` helper "
+                    "in the prompt's PART V); it never self-intersects; "
+                    "(5) Avoid touching the rotation axis with a horizontal run "
+                    "(a vertex exactly at `x==0` on Z-axis creates a degenerate "
+                    "cone apex); offset by ≥ 1e-4 or close the profile to the axis "
+                    "via a single radial move only at the extremes."
+                )
             return (
                 "Validation failed: shape is invalid — geometry was computed but "
                 "OCCT flagged it as malformed (self-intersection, zero-area face, "
@@ -595,11 +630,26 @@ def run(
         log_info("agent.run", "code blocks extracted", block_count=len(blocks))
         _log_status(f"code extracted, blocks={len(blocks)}", attempt_notifications, callbacks)
         if not blocks:
-            # No code → treat as feedback
-            history.add(Role.FEEDBACK, "No code generated.")
-            log_warn("agent.run", "LLM returned no executable code")
-            _log_status("LLM returned no executable code", attempt_notifications, callbacks)
-            # Per-attempt audit log
+            # Sprint 5.16: treat "no code generated" as a RETRIABLE failure,
+            # not a fatal dead-end. When a previous attempt failed (e.g.
+            # shape-invalid), the LLM sometimes returns prose explaining
+            # the problem instead of new code. A stronger feedback + retry
+            # usually recovers.
+            last_error = "No code generated"
+            history.add(
+                Role.FEEDBACK,
+                "No executable Python code was found in your last response. "
+                "The ONLY valid response is a fenced ```python``` block. "
+                "Do NOT apologize, do NOT describe the problem, do NOT ask "
+                "for clarification — re-emit the complete code with the fix "
+                "applied. If the previous attempt failed validation, fix the "
+                "specific line the feedback pointed at and emit the whole "
+                "program again.",
+            )
+            log_warn("agent.run", "LLM returned no executable code",
+                     attempt=attempts, max_retries=MAX_RETRIES)
+            _log_status("LLM returned no executable code — retrying",
+                        attempt_notifications, callbacks)
             audit_log(
                 "agent_attempt",
                 {
@@ -619,7 +669,11 @@ def run(
                 },
                 correlation_id=get_correlation_id(),
             )
-            # Final error audit log
+            if attempts < MAX_RETRIES:
+                # Retry — do NOT emit final agent_error yet, loop continues.
+                continue
+            # Retries exhausted — fall through to the max_retries_exhausted
+            # audit at the end of the function.
             audit_log(
                 "agent_error",
                 {

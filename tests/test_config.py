@@ -88,23 +88,29 @@ def test_save_omits_api_key():
     assert parsed["timeout"] == 180.0
 
 
-def test_save_api_key_calls_keyring():
-    """save_api_key should store the key via keyring."""
-    mock_keyring = MagicMock()
-    with patch("neurocad.config.config.keyring", mock_keyring):
-        save_api_key("openai", "sk-test")
-    mock_keyring.set_password.assert_called_once_with("neurocad", "openai", "sk-test")
+def test_save_api_key_delegates_to_key_storage():
+    """Sprint 5.15: save_api_key delegates to key_storage.save_key and returns
+    the (backend_name, error) tuple, never raises.
+    """
+    with patch("neurocad.config.config.key_storage.save_key",
+               return_value=("System keyring", None)) as mock_save:
+        result = save_api_key("openai", "sk-test")
+    mock_save.assert_called_once()
+    # Default tier is Automatic
+    kwargs = mock_save.call_args.kwargs
+    assert kwargs.get("tier") == "auto" or "auto" in str(mock_save.call_args)
+    assert result == ("System keyring", None)
 
 
-def test_save_api_key_without_keyring_raises_runtime_error():
-    """save_api_key should fail clearly when keyring is unavailable."""
-    with patch("neurocad.config.config.keyring", None):
-        try:
-            save_api_key("openai", "sk-test")
-        except RuntimeError as exc:
-            assert "keyring is not installed" in str(exc)
-        else:
-            raise AssertionError("save_api_key() should raise when keyring is unavailable")
+def test_save_api_key_never_raises_when_all_backends_fail():
+    """Sprint 5.15: previously raised RuntimeError when keyring missing.
+    Now it returns (backend_name, error_str) and the UI shows it inline.
+    """
+    with patch("neurocad.config.config.key_storage.save_key",
+               return_value=("none", "every backend failed")):
+        name, err = save_api_key("openai", "sk-test")
+    assert name == "none"
+    assert "every backend" in err
 
 
 def test_load_includes_max_created_objects():

@@ -7,7 +7,7 @@ AI‑powered CAD assistant for FreeCAD.
 For installation and development instructions, see [DEV_SETUP.md](DEV_SETUP.md).  
 For architecture and sprint plans, see the `doc/` directory.
 
-Current implementation status (Sprint 5.14, April 2026):
+Current implementation status (Sprint 5.16, April 2026):
 - LLM integration (OpenAI, Anthropic) with configurable provider, model, and API key management
 - Multi‑step Python code execution from LLM responses with rollback on error
 - Secure API key storage via system keyring, environment variables, or session‑only use
@@ -38,6 +38,9 @@ Current implementation status (Sprint 5.14, April 2026):
 - Narrower REFUSAL_KEYWORDS (only download / fetch url / wget / curl) — legitimate "импорт STEP" / "export to file" requests no longer triaged away before the LLM sees them
 - Wireframe / math-visualization canonical recipe (PART VI): sphere-per-vertex + cylinder-per-edge with `make_edge_cylinder` helper, `math.acos` clamp, degenerate-edge skip — covers hypercubes, graphs, polytopes, knots, fractals (Sprint 5.14)
 - Explicit `FreeCAD.Vector is always 3D` warning with nD → 3D projection example — no more `Vector(x1, x2, x3, x4, x5)` TypeErrors on higher-dimensional requests
+- Cross-platform tiered API-key storage (Sprint 5.15): Python `keyring` → macOS `security` CLI → Linux `secret-tool` CLI → plaintext-0600 file. No more modal "could not save securely" — the Settings dialog has radio buttons (Automatic / Plaintext / Session only) and shows where the key ended up inline.
+- Revolution-specific `shape is invalid` feedback + `fillet_arc_points` bevel helper for stepped-shaft profiles — no more self-intersecting wires from hand-rolled arc math (Sprint 5.16)
+- `no_code_generated` is now retriable with a stronger "emit a fenced python block, do not apologize" feedback — previously the LLM could deadlock the agent on a single prose response
 
 ## License
 

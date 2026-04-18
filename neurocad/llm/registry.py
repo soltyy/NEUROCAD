@@ -1,9 +1,11 @@
 """Adapter registry and factory.
 
-API key resolution follows a strict precedence contract:
+API key resolution follows a strict precedence contract (Sprint 5.15):
 1. Session key (temporary, supplied via UI "Use once") – highest priority.
 2. Environment variable NEUROCAD_API_KEY_{PROVIDER_UPPERCASE}.
-3. System keyring (service="neurocad", account=provider).
+3. `neurocad.config.key_storage.load_key(provider)` — tries every available
+   backend in priority order: system keyring (pip) → macOS Keychain CLI →
+   Linux secret-tool → plaintext-0600 file.
 4. If none found, ValueError is raised with a clear guidance message.
 
 This contract is guaranteed across all adapter loading functions.
@@ -12,10 +14,7 @@ This contract is guaranteed across all adapter loading functions.
 import os
 from typing import Any
 
-try:
-    import keyring
-except ImportError:
-    keyring = None  # type: ignore[assignment]
+from neurocad.config import key_storage
 
 from .anthropic import AnthropicAdapter
 from .base import LLMAdapter
@@ -35,18 +34,18 @@ _ADAPTER_VALID_KEYS = {
 
 
 def _resolve_api_key(provider: str, session_key: str | None = None) -> str:
-    """Retrieve API key with precedence: session key → environment variable → keyring.
+    """Retrieve API key. Precedence: session → env-var → key_storage backends.
 
     Args:
         provider: LLM provider name (e.g., "openai").
-        session_key: Optional temporary key supplied by the user (e.g., via "Use once").
-            If present and non‑empty, it takes precedence and no fallback is attempted.
+        session_key: Optional temporary key (e.g., via "Use once").
+            If present and non-empty, it is used directly, no fallback attempted.
 
     Returns:
-        API key as a string.
+        API key string.
 
     Raises:
-        ValueError: No key could be found.
+        ValueError: No key could be found in any of the sources.
     """
     if session_key and session_key.strip():
         return session_key.strip()
@@ -54,18 +53,15 @@ def _resolve_api_key(provider: str, session_key: str | None = None) -> str:
     key = os.getenv(env_var)
     if key:
         return key
-    if keyring is not None:
-        key = keyring.get_password("neurocad", provider)
-        if key:
-            return key
-        keyring_hint = "or store it in the system keyring"
-    else:
-        keyring_hint = (
-            "or install the `keyring` package in the FreeCAD Python environment to store it"
-        )
+    stored_key, _backend_name = key_storage.load_key(provider)
+    if stored_key:
+        return stored_key
+    # Compose a useful diagnostic about what backends were actually tried.
+    available = ", ".join(b.name for b in key_storage.available_backends()) or "none"
     raise ValueError(
         f"No API key found for provider '{provider}'. "
-        f"Set the {env_var} environment variable {keyring_hint}."
+        f"Set the {env_var} environment variable, or save a key via the "
+        f"NeuroCad Settings dialog (available storage backends: {available})."
     )
 
 

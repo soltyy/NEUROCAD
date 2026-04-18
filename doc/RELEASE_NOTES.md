@@ -1,3 +1,96 @@
+# Release Notes – Sprint 5.16 (Revolution Profile Diagnostics + No-Code Retry + Bevel Helper)
+
+**Date:** 2026‑04‑18
+**Based on:** Audit of a technical dog-food request ("Сделай ось колёсной пары РУ1-Ш по ГОСТ 33200-2014" — stepped shaft, length 2294 mm, fillets R=20/25/40, central lathe bores). Two attempts, both failed: one with `shape is invalid` on the Part::Revolution result (self-intersecting 2D profile from hand-rolled fillet arcs), then `no_code_generated` on the retry — the LLM returned prose instead of new code, and the agent returned immediately without retrying. Three narrow fixes eliminate this failure class.
+
+---
+
+## PR Summary
+Sprint 5.16 is a prompt-and-feedback sprint. Three targeted changes:
+
+1. **Revolution-specific `shape is invalid` branch in `_make_feedback`.** When the invalid object's name matches `revolution / revolved / axis / profile / wire / ring`, a 5-point checklist replaces the generic boolean/sweep diagnosis: call `profile_wire.isValid()` early, keep the polygon closed (first == last), keep ALL points on one side of the rotation axis, verify arc-start equals previous-segment-end to the last decimal (the #1 cause of self-intersection in hand-rolled fillets), avoid vertices exactly on the axis.
+
+2. **`no_code_generated` is retriable.** Previously, when the LLM returned prose without a fenced block, `agent.run` returned immediately. Now: add a stronger feedback to history (`"The ONLY valid response is a fenced python block. Do NOT apologize, do NOT describe the problem — re-emit the complete code with the fix"`), log `agent_attempt` with `error_category=no_code`, and `continue` if `attempts < MAX_RETRIES`. Only after all retries fail is `agent_error` emitted.
+
+3. **`fillet_arc_points` bevel helper in defaults.py PART III.** Linear interpolation between `(r_start, z_start)` and `(r_end, z_end)` through `n_pts` points — never self-intersects, no arc-centre math required. Explicit prompt guidance: when tangent-fillet geometry doesn't admit a true R, the LLM should fall back to this helper rather than fabricate a wrong arc.
+
+## User-visible changes
+- Stepped-shaft / revolution requests no longer fail silently on self-intersecting profiles — the LLM gets a concrete checklist pointing at the likely bug (fillet arc stitching).
+- If the LLM momentarily responds with prose after a failed attempt, the agent now retries with a firmer reminder instead of giving up.
+- The canonical prompt offers a safe bevel helper; real tangent fillets remain an option but are no longer the only documented path.
+
+## Migration / rollout notes
+- Prompt-only + agent-only changes; no executor, worker, config, adapter, or transaction changes.
+- `_make_feedback` signature unchanged (Revolution branch is internal to the validation block).
+- `agent.run` no longer returns `AgentResult(no_code_generated)` on the first prose response; callers that rely on attempt=1 as a fast-fail signal should adjust.
+
+## Rollback notes
+Revert `neurocad/core/agent.py` and `neurocad/config/defaults.py` plus the three added tests in `tests/test_agent.py`.
+
+## Manual verification
+1. Submit a complex revolution request (e.g. the ось колёсной пары prompt). If the LLM produces a self-intersecting wire, the feedback should mention `profile_wire.isValid()`, `fillet_arc_points`, and "keep all points on ONE side of the rotation axis".
+2. Intentionally trigger an empty LLM response — the agent should retry, not fail immediately.
+3. Simpler revolution requests (e.g. a washer or a ring) should keep working (no regression).
+
+---
+
+# Release Notes – Sprint 5.15 (Cross-Platform Tiered API Key Storage)
+
+**Date:** 2026‑04‑18
+**Based on:** FreeCAD 1.1 bundled Python does NOT include the `keyring` pip package. The previous Settings dialog therefore popped a modal on every Save ("Configuration saved, but API key could not be stored securely… You will need to provide the key again next time") and the key was simply not persisted. Users re-entered the key on every launch.
+
+---
+
+## PR Summary
+Sprint 5.15 introduces a tiered cross-platform key storage chain with no mandatory pip dependencies, plus a cleaner Settings UX (radio-buttons + inline status; no more modals).
+
+**Storage tiers (tried in this order by `save_key(..., tier="auto")`):**
+
+1. **Python `keyring`** — used if the pip package is present. Most secure; delegates to OS keychain directly.
+2. **macOS `security` CLI** — `add-generic-password` / `find-generic-password`. Works without pip deps; same OS Keychain under the hood.
+3. **Linux `secret-tool` CLI** — `secret-tool store --label ... service neurocad account <provider>`, reads/writes via libsecret (GNOME Keyring).
+4. **Plaintext file** — JSON at `<config_dir>/api_keys.json`, `chmod 0600` on Unix. Universal last-resort.
+
+**Settings UI changes:**
+- Radio buttons replace the modal warning: **Automatic (recommended)** / **Plaintext file (owner-only)** / **Session only (do not save)**.
+- Inline status line shows outcome: "🔑 Settings saved. Key persisted to **macOS Keychain**." — no modal dialog.
+- When opening the dialog, an informational line shows where the currently-saved key lives, e.g. "🔑 Key for **openai** currently stored in: **Plaintext file (owner-only)**".
+- No `QMessageBox.warning` / `QMessageBox.information` on Save / Use once paths; all feedback is inline.
+
+**API changes:**
+- `config.save_api_key(provider, key, tier=TIER_AUTOMATIC) -> tuple[str, str | None]` — now returns `(backend_name, error_or_None)`; never raises.
+- New: `config.load_api_key(provider) -> tuple[str | None, str | None]`, `config.delete_api_key(provider) -> list[str]`.
+- `registry._resolve_api_key` precedence: session → env-var → `key_storage.load_key()` (tries every backend).
+
+## User-visible changes
+- Save on a FreeCAD bundle without `keyring`: key ends up in macOS Keychain (via CLI) on macOS, in GNOME Keyring (via `secret-tool`) on Linux, or in a plaintext-0600 file as the universal fallback. No scary modal.
+- "Use once" unchanged: temporary adapter, key never persisted.
+- Radio "Plaintext file (owner-only)" forces the plaintext backend even when more secure options exist — honest choice for users who accept the tradeoff.
+- Radio "Session only" builds a session adapter and skips persistence entirely (same as "Use once" button).
+
+## Migration / rollout notes
+- Backward-incompatible: `save_api_key` no longer raises `RuntimeError`. Callers outside `ui/settings.py` should switch to inspecting the returned tuple.
+- Audit log unaffected; no new config keys added.
+- Dev dependency `keyring` stays in `pyproject.toml` `[project.optional-dependencies.dev]` — still recommended for the developer `.venv` but no longer required at runtime.
+
+## Rollback notes
+Revert these files:
+- `neurocad/config/key_storage.py` (new file — delete it)
+- `neurocad/config/config.py` (restore the `import keyring` + `save_api_key` that raises)
+- `neurocad/llm/registry.py` (restore `import keyring` + old `_resolve_api_key`)
+- `neurocad/ui/settings.py` (restore modal-based UX)
+- `tests/test_key_storage.py` (new — delete), plus reverts in `tests/test_config.py`, `tests/test_settings.py`, `tests/test_adapters.py`.
+
+## Manual verification
+
+1. Open Settings on macOS, enter a real OpenAI key, choose **Automatic**, click Save. Expected inline message: "🔑 Settings saved. Key persisted to **System keyring**" (if pip `keyring` installed in the FreeCAD Python) or "… **macOS Keychain**" (if not). Close and reopen the dialog — the key field is blank, but the header shows "🔑 Key for openai currently stored in: …".
+2. Verify `security find-generic-password -s neurocad -a openai -w` prints the key in Terminal.
+3. Choose **Plaintext file (owner-only)**, click Save. Check `~/Library/Application Support/FreeCAD/v1-1/neurocad/api_keys.json`. Run `stat -f "%Sp" api_keys.json` → should print `-rw-------`.
+4. On Linux, repeat with `secret-tool lookup service neurocad account openai`.
+5. Choose **Session only**, click Save. Close FreeCAD and reopen — dialog should show "No saved key for openai" in the header.
+
+---
+
 # Release Notes – Sprint 5.14 (Wireframe / Math Visualization + Vector 3D Guard)
 
 **Date:** 2026‑04‑18

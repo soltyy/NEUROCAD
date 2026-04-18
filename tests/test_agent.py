@@ -700,6 +700,82 @@ def test_make_feedback_shape_invalid():
     assert "isValid()" in feedback
 
 
+def test_make_feedback_shape_invalid_revolution_specific():
+    """Sprint 5.16: 'Shape is invalid' on a Revolution-related object name gives
+    revolution-specific hints (closed wire, one side of axis, fillet-arc bugs)
+    instead of the generic boolean/sweep diagnosis.
+    """
+    from neurocad.core.agent import _make_feedback
+    fb = _make_feedback(
+        "Validation failed for WheelAxisRevolution: Shape is invalid",
+        "validation",
+    )
+    assert "Part::Revolution" in fb or "revolved" in fb.lower()
+    assert "isValid" in fb
+    assert "CCW" in fb or "closed" in fb.lower()
+    assert "fillet_arc_points" in fb or "linear bevel" in fb.lower()
+    # Non-revolution object falls back to the general boolean/sweep message.
+    fb_boolean = _make_feedback(
+        "Validation failed for FusedCube: Shape is invalid",
+        "validation",
+    )
+    assert "boolean Fuse/Cut" in fb_boolean
+
+
+def test_run_no_code_generated_retries(qapp):
+    """Sprint 5.16: a first attempt that produces no code now retries instead
+    of failing immediately. Only after MAX_RETRIES exhausted does it return
+    no_code_generated.
+    """
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = "just prose, no fenced block"
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent.extract_code_blocks", return_value=[]):
+        result = run("make a box", mock_doc, mock_adapter, history)
+
+    # LLM called MAX_RETRIES times (previously: only 1)
+    assert mock_adapter.complete.call_count == 3
+    assert result.attempts == 3
+    assert result.ok is False
+    assert "No code generated" in (result.error or "")
+
+
+def test_run_no_code_generated_feedback_is_stronger(qapp):
+    """Sprint 5.16: the FEEDBACK added to history after no-code now demands
+    a fenced code block explicitly, not the old soft 'No code generated.'
+    """
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.history import History, Role
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = "prose"
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent.extract_code_blocks", return_value=[]):
+        run("make a box", mock_doc, mock_adapter, history)
+
+    # Feedback messages added to history (History.items is a property → list of dicts)
+    feedback_msgs = [
+        item for item in history.items if item["role"] == Role.FEEDBACK
+    ]
+    assert feedback_msgs, "expected at least one feedback message"
+    last = feedback_msgs[-1]["content"]
+    assert "fenced" in last.lower() or "```python" in last
+    assert "apologize" in last.lower() or "describe" in last.lower()
+
+
 def test_make_feedback_touched_invalid_thread_specific():
     """Sprint 5.8: thread-related Touched/Invalid gets thread-specific guidance."""
     from neurocad.core.agent import _make_feedback

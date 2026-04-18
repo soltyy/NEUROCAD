@@ -1,4 +1,4 @@
-# NeuroCad · Sprint Plans v1.7
+# NeuroCad · Sprint Plans v1.9
 **Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 > **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
@@ -36,7 +36,9 @@
 - [Sprint 5.12 — Truly Parametric Template: Placeholder Syntax + Parse Instructions + ISO 4014/4017](#sprint-512--truly-parametric-template-placeholder-syntax--parse-instructions--iso-40144017)
 - [Sprint 5.13 — Naming Contract + defaults.py Bug Fixes (external audit)](#sprint-513--naming-contract--defaultspy-bug-fixes-external-audit)
 - [Sprint 5.14 — Wireframe / Math Visualization + Vector 3D Guard](#sprint-514--wireframe--math-visualization--vector-3d-guard)
-- [Сводная таблица: что изменилось от v0.1 → v1.7](#сводная-таблица-что-изменилось-от-v01--v17)
+- [Sprint 5.15 — Cross-Platform Tiered API Key Storage](#sprint-515--cross-platform-tiered-api-key-storage)
+- [Sprint 5.16 — Revolution Profile Diagnostics + No-Code Retry + Bevel Helper](#sprint-516--revolution-profile-diagnostics--no-code-retry--bevel-helper)
+- [Сводная таблица: что изменилось от v0.1 → v1.9](#сводная-таблица-что-изменилось-от-v01--v19)
 
 ---
 
@@ -993,6 +995,101 @@ LLM вынужден подставить `24.0` / `80.0` / `"ISO4014"` — ос
 
 ---
 
+# Sprint 5.15 — Cross-Platform Tiered API Key Storage
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** FreeCAD 1.1 bundled Python **не содержит** пакет `keyring`. Текущая реализация при отсутствии `keyring` показывала alarming модальный диалог «API key could not be stored securely… You will need to provide the key again next time», и ключ физически никуда не сохранялся. Пользователь был вынужден вводить ключ при каждом запуске FreeCAD.
+
+## Цель
+
+Tiered кросс-платформенное хранилище API-ключа, которое работает без pip-зависимостей, с явным выбором tier'а в UI:
+
+1. **Strategy-классы backend'ов** в новом модуле `neurocad/config/key_storage.py`:
+   - `KeyringBackend` — использует pip-пакет `keyring` если установлен
+   - `MacOSKeychainBackend` — `security add/find-generic-password` CLI (macOS, без pip)
+   - `LinuxSecretToolBackend` — `secret-tool store/lookup` CLI (Linux / GNOME Keyring, без pip)
+   - `PlaintextFileBackend` — JSON в config dir с `chmod 0600` (универсальный last-resort)
+2. **Orchestration** `save_key(provider, key, tier)` / `load_key(provider)` / `delete_key(provider)` — пробует backend'ы по приоритету safe → universal, возвращает `(backend_name, error)`.
+3. **Settings UI** — radio-buttons: Automatic (recommended) / Plaintext file (owner-only) / Session only. Inline status line заменяет модальный warning. Показывает, где ключ сейчас хранится при загрузке диалога.
+4. **`_resolve_api_key`** в `registry.py` — precedence: session → env-var `NEUROCAD_API_KEY_<PROVIDER>` → `key_storage.load_key()` (пробует все backend'ы).
+
+**Non-goals:** шифрование plaintext-файла (нет мастер-пароля — security theater); автоматическая установка `keyring` в FreeCAD Python (хрупко, остаётся опциональным шагом в DEV_SETUP.md).
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-031A  / Developer / neurocad/config/key_storage.py — strategy classes + orchestration  / planned
+2. NC-DEV-CORE-031B  / Developer / config.py::save_api_key / load_api_key / delete_api_key — wire     / planned
+3. NC-DEV-CORE-031C  / Developer / registry.py::_resolve_api_key — использует key_storage.load_key   / planned
+4. NC-DEV-UI-031D    / Developer / settings.py — radio, inline status, remove alarming modal          / planned
+5. NC-DEV-TEST-031E  / Developer / tests/test_key_storage.py (22 теста) + update test_settings/config/adapters / planned
+6. NC-DEV-DOC-015    / Developer / Sprint 5.15 + README + RELEASE_NOTES v1.8                          / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-031A** | Developer | 1 | Strategy-классы backend'ов в новом `neurocad/config/key_storage.py` | `config/key_storage.py` (новый файл) | Базовый `class KeyStorageBackend` с 4 методами (`is_available`, `save`, `load`, `delete`); concrete backend'ы: `KeyringBackend`, `MacOSKeychainBackend`, `LinuxSecretToolBackend`, `PlaintextFileBackend`; module-level функции `save_key(provider, key, tier)` / `load_key(provider)` / `delete_key(provider)` / `available_backends()` / `_all_backends()`; константы `TIER_AUTOMATIC / TIER_SESSION / TIER_PLAINTEXT`; все OS-native backend'ы используют `subprocess.run`, не требуют pip-deps | `TASK CODE: NC-DEV-CORE-031A` / Создать новый модуль `neurocad/config/key_storage.py` с иерархией backend'ов. Ключ никогда не логируется. PlaintextFileBackend использует atomic write (tmp + rename) и `os.chmod(path, 0o600)` на Unix. macOS backend использует `security add-generic-password -U` для update-if-exists. Linux backend передаёт secret через stdin (`secret-tool store` reads from stdin). `save_key` перебирает backend'ы до первого успеха, возвращает `(backend_name, error_or_None)`. Никогда не raises. |
+| **NC-DEV-CORE-031B** | Developer | 1 | Wire `config.py::save_api_key` / `load_api_key` / `delete_api_key` на key_storage | `config/config.py`, `tests/test_config.py` | `save_api_key(provider, key, tier=TIER_AUTOMATIC) -> (backend_name, error)` — delegates to `key_storage.save_key`, не raises; новые `load_api_key(provider) -> (key, backend_name)` и `delete_api_key(provider) -> list[backend_name]`; удалён `import keyring` из `config.py`; тест `test_save_api_key_delegates_to_key_storage` + `test_save_api_key_never_raises_when_all_backends_fail` | `TASK CODE: NC-DEV-CORE-031B` / Удалить `try: import keyring except ImportError: keyring = None` из `config.py`. Добавить `from neurocad.config import key_storage`. Переписать `save_api_key` чтобы вызывал `key_storage.save_key(provider, key, tier=tier)`. Сигнатура `save_api_key(provider, key, tier=key_storage.TIER_AUTOMATIC) -> tuple[str, str \| None]` — backward-incompatible (раньше raise'ил RuntimeError, теперь возвращает tuple). Updated callers: settings.py. |
+| **NC-DEV-CORE-031C** | Developer | 1 | `registry.py::_resolve_api_key` использует `key_storage.load_key` | `llm/registry.py`, `tests/test_adapters.py` | `_resolve_api_key` precedence: session → env-var `NEUROCAD_API_KEY_<PROVIDER>` → `key_storage.load_key(provider)`; сообщение об ошибке включает `available_backends()` names; тесты обновлены (`test_api_key_precedence_order` patches `key_storage.load_key`, не `keyring`) | `TASK CODE: NC-DEV-CORE-031C` / Удалить `import keyring` из registry.py. Переписать `_resolve_api_key` используя `key_storage.load_key`. ValueError message перечисляет available backends вместо «install the `keyring` package». |
+| **NC-DEV-UI-031D** | Developer | 2 | Settings UI — radio, inline status, remove modal | `ui/settings.py`, `tests/test_settings.py` | Три RadioButton: Automatic / Plaintext file / Session only в QButtonGroup; `_selected_tier()` method; `_storage_status: QLabel` с RichText; `_set_status(html, color)` helper; `_on_save` показывает inline result (имя backend'а) вместо modal; `_load_current()` отображает текущий backend storage ключа для выбранного provider'а; `_on_provider_changed` обновляет storage status; все `QMessageBox.warning/information/critical` в save/use_once пути удалены | `TASK CODE: NC-DEV-UI-031D` / Переписать `ui/settings.py`. Radio в auth_layout ниже API Key поля. На Save: не всплывает модал, только inline `_storage_status.setText(...)` с цветовыми кодами (green = success, orange = plaintext warning, red = error). Settings dialog при открытии вызывает `key_storage.load_key(provider)` и показывает «🔑 Key currently stored in: <backend_name>». Qt.RichText через `from .compat import Qt`. |
+| **NC-DEV-TEST-031E** | Developer | 3 | Tests — key_storage (22 теста) + updated settings/config/adapters | `tests/test_key_storage.py` (новый), `tests/test_settings.py` (переписан), `tests/test_config.py`, `tests/test_adapters.py` | `test_key_storage.py`: plaintext roundtrip / multi-provider / overwrite / chmod 0600 / delete / corrupted file recovery / macOS save-load-delete с mock subprocess / Linux save via stdin / session tier / automatic fallback chain / all-backends-fail / load precedence / delete_key purges all backends; `test_settings.py` переписан под новый UI (radio buttons, inline status, no modal); `test_config.py::test_save_api_key_delegates_to_key_storage` + `test_save_api_key_never_raises_when_all_backends_fail`; `test_adapters.py` патчит `key_storage.load_key` вместо `keyring` | `TASK CODE: NC-DEV-TEST-031E` / 22 теста в test_key_storage.py (по одному на каждую ветку backend'а + orchestration). test_settings.py: helper `_mock_ui(dialog, api_key, tier)` + 12 тестов покрытия всех tier веток. test_adapters.py: `patch("neurocad.llm.registry.key_storage.load_key")`. |
+| **NC-DEV-DOC-015** | Developer | 4 | Sprint 5.15 + README + RELEASE_NOTES v1.8 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.15 в каноническом формате; версия 1.7 → 1.8; README upgrade; RELEASE_NOTES содержит описание tier'ов и миграцию | — |
+
+**Правила останова Sprint 5.15:** изменение threading / transaction / sandbox / executor → rejected / добавление pip зависимости `keyring` в `pyproject.toml` как обязательной (она mandatory для dev, но не для runtime) → rejected / шифрование plaintext файла без мастер-пароля → rejected (security theater) / возврат `save_api_key` raises RuntimeError → rejected (теперь возвращает tuple) / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.16 — Revolution Profile Diagnostics + No-Code Retry + Bevel Helper
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Dog-food на запросе «Сделай ось колёсной пары РУ1-Ш по ГОСТ 33200-2014» (сложный ступенчатый вал + галтели R=20/25/40 + центровые отверстия) выявил три узкие дыры:
+
+1. **Shape-invalid feedback не покрывает Revolution profile self-intersection.** Ошибка `Validation failed for WheelAxisRevolution: Shape is invalid` получала generic boolean/sweep диагноз из Sprint 5.6, хотя корневая причина была в self-intersecting 2D-профиле.
+2. **`no_code_generated` — фатально на первой же попытке.** После shape-invalid LLM вернул prose вместо нового кода; `extract_code_blocks` дал `[]`; агент немедленно вернул `AgentResult(no_code_generated)` БЕЗ retry. При MAX_RETRIES=3 у LLM должен был быть второй шанс.
+3. **Hand-rolled arc approximation — типовой источник self-intersection.** LLM посчитал `center_z = z_start + R, center_r = r_start + R` для галтели от (205, 65) до (235, 82.5) с R=20 — при `t=0` получил point (205, 85) вместо (205, 65), опорная линия из (205, 65) не стыкуется с началом дуги → self-intersecting polygon → invalid revolution.
+
+## Цель
+
+Три узкие правки, все prompt/feedback-уровневые:
+
+1. **Revolution-specific ветка в `_make_feedback('shape is invalid')`** — если `_re_search_invalid_name(error)` даёт name, содержащее `revolution / revolved / axis / profile / wire / ring`, выдаём 5-пунктовый чеклист: `wire.isValid()`, closed polygon (первая вершина == последняя), все точки на одной стороне оси (radius ≥ 0), проверка стыка arc-start = previous-segment-end, избегание точки exactly at axis. Fallback на старый boolean-диагноз для всех остальных имён.
+
+2. **`no_code_generated` теперь retriable.** В `agent.run`, при `not blocks`: добавить stronger feedback в history, `audit_log("agent_attempt", ..., error_category="no_code")`, и — если `attempts < MAX_RETRIES` — `continue` вместо `return`. Stronger feedback: «The ONLY valid response is a fenced ```python``` block. Do NOT apologize, do NOT describe the problem… re-emit the complete code».
+
+3. **`fillet_arc_points(r_start, z_start, r_end, z_end, n_pts=7)` helper в defaults.py PART III.** Линейный bevel interpolation — never self-intersects. Явная инструкция в prompt: «when in doubt about tangent-fillet geometry, USE THIS HELPER; true tangent-fillet requires control points that satisfy both tangencies — if R doesn't fit the step, any hand-rolled arc will under/over-shoot».
+
+**Non-goals:** executor / agent threading / transaction / sandbox не трогаем. Алгоритмы правильной геометрии tangent-fillet (с SLERP / двумя tangency constraints) откладываются.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-032A  / Developer / Revolution ветка в _make_feedback(shape invalid)         / planned
+2. NC-DEV-CORE-032B  / Developer / no_code_generated retries + stronger feedback            / planned
+3. NC-DEV-CORE-032C  / Developer / fillet_arc_points helper в defaults.py PART III          / planned
+4. NC-DEV-TEST-032D  / Developer / 3 новых теста в test_agent.py                            / planned
+5. NC-DEV-DOC-016    / Developer / Sprint 5.16 + RELEASE_NOTES v1.9                         / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-032A** | Developer | 1 | Revolution-specific ветка в `_make_feedback('shape is invalid')` | `core/agent.py` | Если `_re_search_invalid_name(error)` содержит token из `{revolution, revolved, axis, profile, wire, ring}` — выдать 5-пунктовый чеклист с `isValid()`, closed polygon, all points on one side of axis, arc-segment stitching check, avoid axis-touching; иначе — fallback на существующий boolean/sweep message; test `test_make_feedback_shape_invalid_revolution_specific` | `TASK CODE: NC-DEV-CORE-032A` / Расширить validation-ветку `shape is invalid` на имена Revolution/Profile/Wire/Ring. Использовать helper `_re_search_invalid_name` из Sprint 5.8. |
+| **NC-DEV-CORE-032B** | Developer | 1 | `no_code_generated` retriable + stronger feedback | `core/agent.py`, `tests/test_agent.py` | `if not blocks:` теперь добавляет feedback про "ONLY valid response is a fenced block", пишет audit_attempt с category=no_code, и если `attempts < MAX_RETRIES` — `continue`; только на последней попытке возвращает `AgentResult(no_code_generated)`; тест `test_run_no_code_generated_retries` подтверждает `mock_adapter.complete.call_count == 3`; тест `test_run_no_code_generated_feedback_is_stronger` проверяет «fenced»/«apologize» в feedback | `TASK CODE: NC-DEV-CORE-032B` / В agent.run ветка `if not blocks:`: убрать немедленный return; добавить history feedback "The ONLY valid response is a fenced python block. Do NOT apologize, do NOT describe the problem, re-emit the complete code"; audit_log("agent_attempt", ...error_category=no_code); `continue` если `attempts < MAX_RETRIES`; в последней попытке — финальный audit_log("agent_error", error_type=no_code_generated) + return. |
+| **NC-DEV-CORE-032C** | Developer | 2 | `fillet_arc_points` bevel helper | `config/defaults.py` | После section `### Part::Revolution` добавлен раздел `### Fillet/galtel transitions in Revolution profiles — use the SAFE BEVEL HELPER` с функцией `fillet_arc_points(r_start, z_start, r_end, z_end, n_pts=7)` (линейная интерполяция через `#` comment, НЕ triple-quote docstring — иначе ломает внешний DEFAULT_SYSTEM_PROMPT); usage-example для ступенчатого вала с `wire.isValid()` assertion; комментарий «if true tangent-fillet with specific R required — user must supply control points» | `TASK CODE: NC-DEV-CORE-032C` / Добавить helper в PART III после existing Revolution recipe. Использовать `#` comments, НЕ `"""..."""` — последний ломает внешний DEFAULT_SYSTEM_PROMPT (та же ошибка что FIX 1 в Sprint 5.13). Usage-example демонстрирует ступенчатый вал, включая mirror для симметрии и wire.isValid() ассерцию. |
+| **NC-DEV-TEST-032D** | Developer | 3 | Tests | `tests/test_agent.py` | `test_make_feedback_shape_invalid_revolution_specific` (Revolution vs boolean fallback), `test_run_no_code_generated_retries` (3 attempts, not 1), `test_run_no_code_generated_feedback_is_stronger` (feedback-text check) — все зелёные | — |
+| **NC-DEV-DOC-016** | Developer | 4 | Sprint 5.16 + RELEASE_NOTES v1.9 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.16 в каноническом формате; версия 1.8 → 1.9 | — |
+
+**Правила останова Sprint 5.16:** изменение threading / transaction / sandbox → rejected / `"""..."""` внутри `DEFAULT_SYSTEM_PROMPT` (повтор SyntaxError-бага FIX 1) → rejected / возврат `no_code_generated` как фатальной немедленно → rejected / помпезные «Claude вычислит tangent-fillet через SLERP» добавки без benchmark → отложено / ответ без TASK CODE = невалиден.
+
+---
+
 **Deferred (not in this sprint):**
 - Блокировка `ViewObject` в executor — низкий приоритет, ViewObject не опасен; добавить лишь warning что в headless-контексте modification не persist.
 - Audit field `failed_block_idx` уже добавлен в Sprint 5.13 — можно прогнать статистику за сутки после следующего dog-food, чтобы количественно подтвердить снижение naming drift.
@@ -1057,3 +1154,9 @@ LLM вынужден подставить `24.0` / `80.0` / `"ISO4014"` — ос
 | FreeCAD.Vector dimensionality | не задокументировано → LLM пишет `Vector(x1..x5)` на nD-запросах | явный warning «ALWAYS 3D» + пример nD→3D projection через tuples (Sprint 5.14) |
 | Wireframe / math viz recipe | отсутствовал → LLM fallback на Part::Box → degenerate solids на nD projection | canonical PART VI: sphere-per-vertex + cylinder-per-edge + `make_edge_cylinder` helper с acos clamp и degenerate-edge skip (Sprint 5.14) |
 | `math.acos` float noise | без clamp'а → `ValueError: math domain error` на edge cases (параллельные векторы) | обязательный clamp `max(-1.0, min(1.0, cos_a))` в canonical helper (Sprint 5.14) |
+| API key storage | только `keyring` pip, при его отсутствии (FreeCAD bundle) модал «can't save» + ключ пропадает | tiered cross-platform: keyring → macOS `security` CLI → Linux `secret-tool` → plaintext-0600 file; radio-buttons в Settings; inline status вместо модала (Sprint 5.15) |
+| Settings UX | alarming modal при отсутствии keyring, без выбора | Settings dialog: Automatic / Plaintext file / Session only + показывает текущий backend storage ключа при открытии (Sprint 5.15) |
+| `save_api_key` API | raises `RuntimeError` если keyring missing | returns `(backend_name, error_or_None)` — никогда не raises, UI показывает результат inline (Sprint 5.15) |
+| Shape-invalid feedback для Revolution | общий boolean/sweep диагноз не про self-intersecting 2D-профиль | Revolution-specific ветка: 5 пунктов про closed wire / one-side-of-axis / arc stitching / avoid-axis-touch (Sprint 5.16) |
+| `no_code_generated` | фатально на первой же попытке — ни одного retry | retriable: stronger feedback про «fenced block only, re-emit complete code»; retry до MAX_RETRIES (Sprint 5.16) |
+| Hand-rolled arc approximation | LLM кривит center (например `center_r = r_start + R` — самое наивное и самое частое) → self-intersection | `fillet_arc_points(r_start, z_start, r_end, z_end, n_pts=7)` linear-bevel helper в defaults.py; never self-intersects (Sprint 5.16) |

@@ -9,10 +9,7 @@ from neurocad.config.defaults import (
     DEFAULT_SNAPSHOT_MAX_CHARS,
 )
 
-try:
-    import keyring
-except ImportError:
-    keyring = None  # type: ignore[assignment]
+from neurocad.config import key_storage
 
 
 DEFAULT_PROVIDER = "openai"
@@ -89,11 +86,37 @@ def save(config: dict[str, Any]):
         json.dump(config, f, indent=2)
 
 
-def save_api_key(provider: str, key: str):
-    """Store API key in system keyring (outside config file)."""
-    if keyring is None:
-        raise RuntimeError(
-            "keyring is not installed in the active FreeCAD Python environment. "
-            "Install the project dependencies or use an environment variable/session key."
-        )
-    keyring.set_password("neurocad", provider, key)
+def save_api_key(
+    provider: str,
+    key: str,
+    tier: str = key_storage.TIER_AUTOMATIC,
+) -> tuple[str, str | None]:
+    """Persist API key through the tiered key_storage chain.
+
+    Returns `(backend_name_used, error_message_or_None)`. Unlike the previous
+    implementation, this never raises — the UI receives a concrete storage
+    tier name ("macOS Keychain", "Plaintext file (owner-only)", …) and can
+    show that to the user instead of an alarming modal.
+
+    tier:
+      - key_storage.TIER_AUTOMATIC — try secure backends first, fall back to plaintext
+      - key_storage.TIER_PLAINTEXT — force the plaintext file backend
+      - key_storage.TIER_SESSION   — do not persist; caller holds the key in memory only
+    """
+    return key_storage.save_key(provider, key, tier=tier)
+
+
+def load_api_key(provider: str) -> tuple[str | None, str | None]:
+    """Return `(key, backend_name)` by trying every available backend.
+
+    `None, None` if no backend has a stored key for the provider.
+    """
+    return key_storage.load_key(provider)
+
+
+def delete_api_key(provider: str) -> list[str]:
+    """Delete the stored key for `provider` from every available backend.
+
+    Returns the list of backend names from which the key was actually removed.
+    """
+    return key_storage.delete_key(provider)
