@@ -7,7 +7,7 @@ AI‑powered CAD assistant for FreeCAD.
 For installation and development instructions, see [DEV_SETUP.md](DEV_SETUP.md).  
 For architecture and sprint plans, see the `doc/` directory.
 
-Current implementation status (Sprint 5.13, April 2026):
+Current implementation status (Sprint 5.14, April 2026):
 - LLM integration (OpenAI, Anthropic) with configurable provider, model, and API key management
 - Multi‑step Python code execution from LLM responses with rollback on error
 - Secure API key storage via system keyring, environment variables, or session‑only use
@@ -36,6 +36,8 @@ Current implementation status (Sprint 5.13, April 2026):
 - Canonical naming contract (bolt / gear / wheel tables with explicit "NEVER use" aliases) eliminates cross-block variable drift that caused 14+ NameError failures per dog-food session (Sprint 5.13)
 - Block-aware NameError feedback: failures in Block ≥ 2 receive a fresh-namespace + canonical-names diagnosis instead of a generic message
 - Narrower REFUSAL_KEYWORDS (only download / fetch url / wget / curl) — legitimate "импорт STEP" / "export to file" requests no longer triaged away before the LLM sees them
+- Wireframe / math-visualization canonical recipe (PART VI): sphere-per-vertex + cylinder-per-edge with `make_edge_cylinder` helper, `math.acos` clamp, degenerate-edge skip — covers hypercubes, graphs, polytopes, knots, fractals (Sprint 5.14)
+- Explicit `FreeCAD.Vector is always 3D` warning with nD → 3D projection example — no more `Vector(x1, x2, x3, x4, x5)` TypeErrors on higher-dimensional requests
 
 ## License
 

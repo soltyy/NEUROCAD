@@ -1,3 +1,54 @@
+# Release Notes – Sprint 5.14 (Wireframe / Math Visualization + Vector 3D Guard)
+
+**Date:** 2026‑04‑18
+**Based on:** Pentaract (5D hypercube) dog-food session between Sprint 5.13 and 5.14. 5 attempts, 0 successes, 4 different root causes in the logs. Distinct class from fasteners/assemblies — wireframe visualization of a mathematical object (no solid body, no booleans, no "material" to cut). The existing canonical recipes (bolt, gear, wheel, house) all assume solid+boolean workflows and offer no guidance when the object is point+edge structure.
+
+---
+
+## PR Summary
+Sprint 5.14 is a **prompt-only** sprint. Two additions to `DEFAULT_SYSTEM_PROMPT` close the specific failure classes observed on the pentaract task:
+
+1. **`FreeCAD.Vector is ALWAYS 3D` warning** — right after the Placement conventions section. Explicitly states three args max, lists `.x / .y / .z` exist vs `.w / .t / .u` do NOT, and shows the canonical nD→3D linear-projection pattern (keep coords as plain tuples, construct Vector only after projection).
+2. **New section `## PART VI — Wireframe / mathematical visualization`** — parallel to PART V (Bolt/Gear). Covers hypercubes, graphs, polytopes, knots, fractals. Includes a `make_edge_cylinder(doc, start, end, radius, name)` helper with:
+   - `math.acos` clamp `max(-1.0, min(1.0, cos_a))` — avoids `ValueError: math domain error` on parallel/antiparallel vectors (a latent bug that can fire on any task, not just wireframes).
+   - Degenerate-edge skip (`if L < 1e-6: return None`).
+   - Explicit handling of the two parallel-vector edge cases (cos_a ≈ +1 and cos_a ≈ −1).
+   - Hypercube pattern via `itertools.product` + Hamming-distance-1 edge detection.
+   - Hard rule: `DO NOT try to render nD faces/cells — they project degenerately and Validator will reject`.
+
+## User-visible changes
+- `Пентеракт`, `5D hypercube`, `граф` and similar requests now have a canonical recipe the LLM can follow. Expected pattern: small spheres at projected vertices + cylinders between them, no face/cell attempts.
+- `FreeCAD.Vector(a, b, c, d, e)` TypeError no longer happens on nD requests — the prompt now teaches the split "nD math on tuples, then project to 3D Vector".
+- Any future task that rotates a cylinder to align with an arbitrary direction benefits from the acos-clamp pattern (latent bug squashed).
+
+## Deferred to a future sprint
+- Blocking `ViewObject` in `executor._BLOCKED_NAME_TOKENS`. Not strictly dangerous (it's display-only), but LLM-generated `obj.ViewObject.ShapeColor = ...` in headless execution is silently ignored. Lower priority; may add a non-blocking warning comment to the prompt instead.
+- Statistical verification of Sprint 5.13 naming-contract impact on NameError rate — requires one more dog-food day after users restart FreeCAD to reload the updated Python modules.
+
+## Migration / rollout notes
+- Prompt-only; no executor / agent / worker / config / adapter changes.
+- Both new sections are additive and don't shadow existing recipes.
+
+## Rollback notes
+Revert `neurocad/config/defaults.py` — changes confined to two insertion points (Vector warning after Placement conventions; PART VI between Offset and Blocked).
+
+## Manual verification
+
+Submit each of these through the chat:
+1. `Сделай пентеракт 32 вершины 80 рёбер` — expected: blocks use `itertools.product` or equivalent for vertex enumeration; edges via `make_edge_cylinder`; no Part::Box for cells; final scene is spheres + cylinders.
+2. `Сделай граф K5 (полный граф на 5 вершинах)` — 5 spheres + 10 edge cylinders, no faces.
+3. `Сделай трилистник (trefoil knot)` — parameterized curve (t ∈ [0, 2π]) sampled into points, chained via `make_edge_cylinder`.
+4. Regression: `Сделай болт M24 по ISO` — still works (chamfers, thread-entry, real helical cut from Sprint 5.11).
+
+Run the analyzer:
+```bash
+python scripts/dogfood_check.py --since "<session-start>"
+```
+
+If a pentaract / hypercube run still fails with `FreeCAD.Vector` constructor error — the LLM ignored the new warning and we escalate to Sprint 5.15 with a stronger anti-pattern example (showing the broken 5-arg call in a `# NEVER do this` block).
+
+---
+
 # Release Notes – Sprint 5.13 (Naming Contract + defaults.py Bug Fixes — external audit)
 
 **Date:** 2026‑04‑18

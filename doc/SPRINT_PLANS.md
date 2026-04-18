@@ -1,4 +1,4 @@
-# NeuroCad · Sprint Plans v1.6
+# NeuroCad · Sprint Plans v1.7
 **Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 > **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
@@ -35,7 +35,8 @@
 - [Sprint 5.11 — Thread Cut Actually Happens: makePipeShell + Volume Assertion](#sprint-511--thread-cut-actually-happens-makepipeshell--volume-assertion)
 - [Sprint 5.12 — Truly Parametric Template: Placeholder Syntax + Parse Instructions + ISO 4014/4017](#sprint-512--truly-parametric-template-placeholder-syntax--parse-instructions--iso-40144017)
 - [Sprint 5.13 — Naming Contract + defaults.py Bug Fixes (external audit)](#sprint-513--naming-contract--defaultspy-bug-fixes-external-audit)
-- [Сводная таблица: что изменилось от v0.1 → v1.6](#сводная-таблица-что-изменилось-от-v01--v16)
+- [Sprint 5.14 — Wireframe / Math Visualization + Vector 3D Guard](#sprint-514--wireframe--math-visualization--vector-3d-guard)
+- [Сводная таблица: что изменилось от v0.1 → v1.7](#сводная-таблица-что-изменилось-от-v01--v17)
 
 ---
 
@@ -954,7 +955,51 @@ LLM вынужден подставить `24.0` / `80.0` / `"ISO4014"` — ос
 
 ---
 
-## Сводная таблица: что изменилось от v0.1 → v1.6
+# Sprint 5.14 — Wireframe / Math Visualization + Vector 3D Guard
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.13 закрыт (naming contract + 7 defaults.py fixes). Новый dog-food, запрос «Пентеракт / 5D hypercube» — 5 провалов подряд, 4 разных корневых причины. Это новый класс задач — wireframe-визуализация абстрактных объектов, не solid assembly. В текущем промпте нет рецепта для такого класса.
+
+## Цель
+
+Закрыть два конкретных класса провалов, выявленных пентеракт-сессией:
+
+1. **`FreeCAD.Vector(x1, x2, x3, x4, x5)` → TypeError** — LLM трактует «пятимерный куб» буквально и пытается записать 5 координат в 3D-вектор, плюс обращается к несуществующим `.w` / `.t` атрибутам. Промпт не говорит явно, что `FreeCAD.Vector` строго 3D.
+2. **Нет рецепта для wireframe-визуализации.** Все canonical примеры в промпте про solids + booleans (bolt, gear, wheel, house). Пентеракт / графы / полиэдры / узлы требуют принципиально другого workflow: точки (маленькие сферы) + рёбра (тонкие цилиндры) + никаких «ячеек» / «граней» (при линейных проекциях nD→3D они коллапсируют в zero-thickness и Validator отклоняет).
+
+Плюс частая невидимая бомба: `math.acos(cos_angle)` без clamp'а на `[-1, 1]` падает на `ValueError: math domain error` когда float noise даёт `1.0000001` — рано или поздно срабатывает даже на болтах.
+
+**Non-goals:** executor / agent / threading не трогаем; новые FreeCAD API не добавляем; capability scope не расширяем.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-030A  / Developer / FreeCAD.Vector is 3D warning в Placement conventions section  / planned
+2. NC-DEV-CORE-030B  / Developer / Canonical wireframe recipe (PART VI) + make_edge_cylinder helper / planned
+3. NC-DEV-DOC-014    / Developer / Sprint 5.14 + RELEASE_NOTES v1.7                                 / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-030A** | Developer | 1 | `FreeCAD.Vector` is ALWAYS 3D — предупреждение в промпте | `config/defaults.py` | После раздела `## Placement conventions` добавлен блок: `## FreeCAD.Vector is ALWAYS 3D — (x, y, z), three arguments maximum`; перечисление атрибутов (`.x/.y/.z` exist; `.w/.t/.u` do NOT); пример 5D→3D projection через плоские tuples с последующим конструированием Vector | `TASK CODE: NC-DEV-CORE-030A` / Проблема: LLM пишет `FreeCAD.Vector(x1, x2, x3, x4, x5)` → TypeError; обращается к `.w`, `.t` → AttributeError. Решение: одна секция с явным warning и примером корректного паттерна (5D coords в tuples, projection → FreeCAD.Vector). |
+| **NC-DEV-CORE-030B** | Developer | 1 | Canonical wireframe recipe (PART VI) | `config/defaults.py` | Новая секция `## PART VI — Wireframe / mathematical visualization (hypercubes, graphs, polytopes, knots, fractals)`; содержит: (a) стратегию «sphere per vertex + cylinder per edge, no faces/cells»; (b) `make_edge_cylinder(doc, start, end, radius, name)` helper с acos clamp'ом и degenerate-edge skip (`if L < 1e-6: return None`); (c) паттерн hypercube через `itertools.product` + edge detection по Hamming distance == 1 | `TASK CODE: NC-DEV-CORE-030B` / Промпт не содержит рецепта для wireframe-визуализации — LLM fallback'ит на Part::Box для «ячеек» 5D, которые при проекции коллапсируют в zero-thickness и Validator отклоняет. Решение: новая секция PART VI (параллельная PART V для fasteners), с helper-функцией для ребра-как-цилиндр (с clamp'ом acos для float noise) и каноническим hypercube pattern. Explicit rule: `DO NOT try to render nD faces/cells — they project degenerately`. |
+| **NC-DEV-DOC-014** | Developer | 2 | Sprint 5.14 + RELEASE_NOTES v1.7 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.14 в каноническом формате; версия v1.6 → v1.7 | — |
+
+**Правила останова Sprint 5.14:** изменение threading / transaction / sandbox → rejected / добавление numpy или других nD-math библиотек в whitelist без benchmark evidence → rejected / убрать acos clamp «для простоты» → rejected (невидимая бомба) / ответ без TASK CODE = невалиден.
+
+---
+
+**Deferred (not in this sprint):**
+- Блокировка `ViewObject` в executor — низкий приоритет, ViewObject не опасен; добавить лишь warning что в headless-контексте modification не persist.
+- Audit field `failed_block_idx` уже добавлен в Sprint 5.13 — можно прогнать статистику за сутки после следующего dog-food, чтобы количественно подтвердить снижение naming drift.
+
+---
+
+## Сводная таблица: что изменилось от v0.1 → v1.7
 
 | Компонент | v0.1 (оригинал) | v0.8 (финал) |
 |---|---|---|
@@ -1009,3 +1054,6 @@ LLM вынужден подставить `24.0` / `80.0` / `"ISO4014"` — ос
 | `Draft.move(obj, ...)` с undefined `obj` | копируется LLM → NameError | comment-template с `some_obj` placeholder (Sprint 5.13) |
 | REFUSAL_KEYWORDS over-broad | `[file, import, url, http, https]` — ни разу не сработал за 586 событий, но мог блокировать легитимные запросы | `[download, fetch url, wget, curl]` — только явные fetch-from-network (Sprint 5.13) |
 | Audit observability | `failed_block_idx` отсутствовал | добавлен в `audit_log("agent_attempt", ...)` при failure (Sprint 5.13) |
+| FreeCAD.Vector dimensionality | не задокументировано → LLM пишет `Vector(x1..x5)` на nD-запросах | явный warning «ALWAYS 3D» + пример nD→3D projection через tuples (Sprint 5.14) |
+| Wireframe / math viz recipe | отсутствовал → LLM fallback на Part::Box → degenerate solids на nD projection | canonical PART VI: sphere-per-vertex + cylinder-per-edge + `make_edge_cylinder` helper с acos clamp и degenerate-edge skip (Sprint 5.14) |
+| `math.acos` float noise | без clamp'а → `ValueError: math domain error` на edge cases (параллельные векторы) | обязательный clamp `max(-1.0, min(1.0, cos_a))` в canonical helper (Sprint 5.14) |

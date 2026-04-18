@@ -652,6 +652,17 @@ if face_name:
 # or the rotation is applied to the default axis (Z), not the intended one.
 # Use FreeCAD.Placement(pos, FreeCAD.Rotation(axis, degrees)) to be explicit.
 
+## FreeCAD.Vector is ALWAYS 3D — (x, y, z), three arguments maximum.
+# FreeCAD.Vector(x1, x2, x3, x4, x5) → TypeError. .x/.y/.z exist; .w/.t/.u do NOT.
+# For higher-dimensional math (4D, 5D hypercubes, nD polytopes, graphs embedded
+# in nD space) — keep coordinates in plain Python tuples/lists, do the linear
+# algebra with them, and only construct FreeCAD.Vector AFTER projecting down
+# to 3D. Example (5D → 3D linear projection):
+#   pts_5d = [(x1, x2, x3, x4, x5), ...]           # plain tuples
+#   pts_3d = [FreeCAD.Vector(p[0] + 0.3 * p[3],
+#                            p[1] + 0.3 * p[4],
+#                            p[2])                 for p in pts_5d]
+
 ### Primitives
 
 box = doc.addObject("Part::Box","Box")
@@ -1205,6 +1216,55 @@ poly = Draft.make_polygon(6, radius=20)    # regular polygon (6-sided)
 expanded = shape.makeOffsetShape(2.0, 1e-6)
 # 2D offset — offset a wire or face in-plane:
 outer_wire = wire_shape.makeOffset2D(2.0)
+
+===========================================================================
+## PART VI — Wireframe / mathematical visualization (hypercubes, graphs,
+##           polytopes, knots, fractals)
+===========================================================================
+# This class of tasks is DIFFERENT from fasteners/assemblies: there is no
+# "material" to cut, the object is a point-and-edge structure rather than a
+# solid. Linear projections from nD to 3D often collapse cells into zero-
+# thickness shapes — DO NOT use Part::Box / Part::Cube for such "cells",
+# OCCT validation will fail with ['Touched', 'Invalid']. Use ONLY:
+#   1. Small spheres at each projected 3D vertex
+#   2. Thin cylinders between vertex centers as edges
+#   3. Skip faces/cells entirely, OR render them only as their edge outlines
+#
+# Canonical wireframe helper — cylinder between two 3D points:
+def make_edge_cylinder(doc, start, end, radius, name="Edge"):
+    # start, end — FreeCAD.Vector (already projected to 3D)
+    d = end - start
+    L = d.Length
+    if L < 1e-6:
+        return None                           # degenerate edge — skip
+    cyl = doc.addObject("Part::Cylinder", name)
+    cyl.Radius = radius
+    cyl.Height = L
+    # Rotate the cylinder so its +Z axis aligns with the edge direction.
+    # acos() is sensitive to float noise — CLAMP the dot product to [-1, 1]
+    # or math.acos raises ValueError on values like 1.0000001.
+    z_axis = FreeCAD.Vector(0, 0, 1)
+    d_norm = FreeCAD.Vector(d.x / L, d.y / L, d.z / L)
+    cos_a = max(-1.0, min(1.0, z_axis.dot(d_norm)))    # CLAMP — mandatory
+    if abs(cos_a - 1.0) < 1e-9:
+        rot_axis, angle = FreeCAD.Vector(1, 0, 0), 0.0
+    elif abs(cos_a + 1.0) < 1e-9:
+        rot_axis, angle = FreeCAD.Vector(1, 0, 0), 180.0
+    else:
+        rot_axis = z_axis.cross(d_norm)
+        angle = math.degrees(math.acos(cos_a))
+    cyl.Placement = FreeCAD.Placement(start, FreeCAD.Rotation(rot_axis, angle))
+    doc.recompute()
+    return cyl
+#
+# Hypercube pattern (N-dimensional cube with 2^N vertices and N * 2^(N-1) edges):
+#   vtx_nd = list(itertools.product([-1, 1], repeat=N))
+#   edges_nd = [(i, j) for i, v in enumerate(vtx_nd)
+#                       for j, w in enumerate(vtx_nd) if i < j
+#                       and sum(a != b for a, b in zip(v, w)) == 1]
+# Project to 3D via a (3, N) projection matrix or a simple linear formula.
+# Draw a sphere at each 3D point and call make_edge_cylinder for each edge.
+# Do NOT try to render the nD "faces" or "cells" — they project degenerately.
 
 ===========================================================================
 ## Blocked (runtime error if used):
