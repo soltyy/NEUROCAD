@@ -428,35 +428,45 @@ def test_run_retriable_errors_exhaust_retries():
 
 
 def test_run_early_refusal():
-    """run() should return early refusal for file/import/external-resource intents."""
+    """Sprint 5.13: early-refusal only for genuine fetch-from-network intents.
+    "import a STEP file" no longer refuses — the executor sandbox catches real
+    file-system / network calls if the LLM generates them.
+    """
     mock_doc = MagicMock()
     mock_adapter = MagicMock()
     history = History()
 
-    # Use a keyword that triggers refusal
-    result = run("import a STEP file", mock_doc, mock_adapter, history)
+    # Explicit network-fetch request — refused at triage stage.
+    result = run("download from http://example.com", mock_doc, mock_adapter, history)
     assert result.ok is False
     assert result.attempts == 0
     assert "Unsupported operation" in result.error
+    assert not mock_adapter.complete.called
     # Adapter should not be called
     assert not mock_adapter.complete.called
 
 
 def test_contains_refusal_intent():
-    """_contains_refusal_intent returns True only for file/import/external-resource keywords."""
-    # Positive cases (keywords present)
-    assert _contains_refusal_intent("import a file") is True
-    assert _contains_refusal_intent("load a file") is True   # 'file' keyword
+    """Sprint 5.13: _contains_refusal_intent only fires on real fetch-from-network
+    intents. Legitimate requests like 'импорт STEP' / 'export to file' / 'load fcstd'
+    must pass through — the real sandbox is in executor._BLOCKED_NAME_TOKENS.
+    """
+    # Positive cases (genuine fetch-from-network intents)
     assert _contains_refusal_intent("download from http://example.com") is True
     assert _contains_refusal_intent("fetch url") is True
-    assert _contains_refusal_intent("https request") is True
-    # False positive cases (should not trigger)
-    assert _contains_refusal_intent("external diameter") is False   # 'external' removed
-    assert _contains_refusal_intent("resource management") is False # 'resource' removed
-    assert _contains_refusal_intent("filet") is False   # substring, word boundary prevents match
-    assert _contains_refusal_intent("important") is False   # contains 'import' but not whole word
-    # Edge: mixed case
-    assert _contains_refusal_intent("IMPORT a FILE") is True   # case-insensitive
+    assert _contains_refusal_intent("wget some.zip") is True
+    assert _contains_refusal_intent("run curl") is True
+    # Previously blocked, now correctly allowed (triage shouldn't block them)
+    assert _contains_refusal_intent("import a file") is False   # LLM may generate valid open-file code
+    assert _contains_refusal_intent("load a file") is False
+    assert _contains_refusal_intent("https request") is False
+    # False-positive guards
+    assert _contains_refusal_intent("external diameter") is False
+    assert _contains_refusal_intent("resource management") is False
+    assert _contains_refusal_intent("filet") is False
+    assert _contains_refusal_intent("important") is False
+    # Case-insensitive
+    assert _contains_refusal_intent("DOWNLOAD the file") is True
     assert _contains_refusal_intent("") is False
 
 
@@ -548,16 +558,22 @@ Part.makeSphere(3)
 
 
 def test_supported_case_no_forbidden_import():
-    """Regression test: supported prompt contract forbids imports and lists available modules."""
+    """Regression: prompt calls out blocked modules and lists available primitives.
+
+    Sprint 5.7: 'no import statements' phrasing was removed (it contradicted the
+    later section that explicitly allows math/FreeCAD imports). The contract is
+    now: imports are permitted but dangerous modules are explicitly blocked.
+    """
     from neurocad.core.context import DocSnapshot
     from neurocad.core.prompt import build_system
 
     snap = DocSnapshot(filename="test.FCStd", objects=[])
     system = build_system(snap)
 
-    # Imports are forbidden — prompt must say so
-    assert "no import statements" in system or "do NOT import" in system
-    # PartDesign now in scope
+    # Dangerous imports are explicitly blocked and named
+    assert "Blocked:" in system
+    assert "os" in system and "subprocess" in system
+    # PartDesign is in scope
     assert "PartDesign" in system
     # Core primitives still documented
     assert "Part::Cylinder" in system
@@ -644,6 +660,173 @@ def test_make_feedback_bool_not_int():
     assert "makePipeShell" in feedback
     feedback2 = _make_feedback("TypeError: must be bool, not int", "runtime")
     assert "True/False" in feedback2
+
+
+def test_make_feedback_cancelled():
+    """Sprint 5.6: 'Cancelled' runtime error → 'Cancelled by user.'"""
+    from neurocad.core.agent import _make_feedback
+    assert _make_feedback("Cancelled", "runtime") == "Cancelled by user."
+    assert _make_feedback("cancelled", "runtime") == "Cancelled by user."
+    assert _make_feedback("Cancelled while waiting", "runtime") == "Cancelled by user."
+
+
+def test_make_feedback_handoff_timeout():
+    """Sprint 5.6: handoff timeout gives a 'split the script' hint."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("Execution handoff timeout", "timeout")
+    assert "Split the script" in feedback
+    assert "handoff" in feedback.lower()
+    # Generic timeout (non-handoff) keeps the old short message.
+    assert _make_feedback("request timed out", "timeout") == "Execution timed out."
+
+
+def test_make_feedback_list_index_out_of_range():
+    """Sprint 5.6: list index out of range → circular-edge / Vertexes hint."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("IndexError: list index out of range", "runtime")
+    assert "circular" in feedback.lower()
+    assert "Vertexes" in feedback
+    assert "len(" in feedback
+
+
+def test_make_feedback_shape_invalid():
+    """Sprint 5.6: 'Shape is invalid' validation gives a shape.fix() / isValid() hint."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback(
+        "Validation failed for Fusion: Shape is invalid", "validation"
+    )
+    assert "shape.fix()" in feedback
+    assert "self-intersection" in feedback
+    assert "isValid()" in feedback
+
+
+def test_make_feedback_touched_invalid_thread_specific():
+    """Sprint 5.8: thread-related Touched/Invalid gets thread-specific guidance."""
+    from neurocad.core.agent import _make_feedback
+    # Thread-related object name → thread-specific hints
+    fb = _make_feedback(
+        "Validation failed for ThreadedBolt: Object state indicates error: ['Touched', 'Invalid']",
+        "validation",
+    )
+    assert "sweep.Shape.isValid()" in fb
+    assert "10 turns" in fb or "10 * pitch" in fb
+    assert "Frenet" in fb
+    # Non-thread Touched/Invalid → existing fillet diagnosis
+    fb_fillet = _make_feedback(
+        "Validation failed for FilletedBox: Object state indicates error: ['Touched', 'Invalid']",
+        "validation",
+    )
+    assert "Fillet" in fb_fillet
+
+
+def test_make_feedback_nameerror_block_scoping_diagnosis():
+    """Sprint 5.13: NameError in block >= 2 gets cross-block naming drift diagnosis.
+
+    This is the #1 failure mode in dog-food (14+ cases on 2026-04-18) — the
+    LLM uses `major_d` in Block 1 and then `major_diameter` in Block 2.
+    """
+    from neurocad.core.agent import _make_feedback
+    err = "name 'major_diameter' is not defined"
+
+    # Block 2/3 of a 3-block response → specialized drift-diagnosis
+    fb = _make_feedback(err, "runtime", block_idx=2, total_blocks=3)
+    assert "Block 2/3" in fb
+    assert "FRESH namespace" in fb
+    assert "major_d" in fb  # concrete canonical name suggestion
+    assert "shank_h" in fb
+    assert "doc.getObject" in fb
+
+    # Single-block response → fall-back diagnosis (no mention of fresh namespace)
+    fb_single = _make_feedback(err, "runtime", block_idx=1, total_blocks=1)
+    assert "Block" not in fb_single  # no block-number prefix
+    assert "typo" in fb_single.lower() or "previous" in fb_single.lower()
+
+
+def test_make_feedback_involute_gear_not_a_type():
+    """Sprint 5.8: PartDesign::InvoluteGear gets manual-involute guidance."""
+    from neurocad.core.agent import _make_feedback
+    fb = _make_feedback(
+        "Document::addObject: 'PartDesign::InvoluteGear' is not a document object type",
+        "runtime",
+    )
+    assert "Gears Workbench" in fb or "Gears WB" in fb
+    assert "Part.makeCompound" in fb
+    assert "teeth_n" in fb or "teeth" in fb.lower()
+
+
+def test_run_cancellation_fast_exit():
+    """Sprint 5.6: 'Cancelled' exec result must NOT trigger retry — single attempt only."""
+    from unittest.mock import MagicMock, patch
+
+    from neurocad.core.agent import run
+    from neurocad.core.executor import ExecResult
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = "code"
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent.extract_code_blocks", return_value=["code"]), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec, \
+         patch("neurocad.core.agent.audit_log") as mock_audit:
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="Cancelled",
+        )
+        result = run("make a box", mock_doc, mock_adapter, history)
+        assert result.ok is False
+        assert result.attempts == 1
+        assert mock_exec.call_count == 1
+        assert result.error == "Cancelled by user"
+        # One of the audit_log calls must be agent_error with cancelled_by_user
+        error_events = [
+            c for c in mock_audit.call_args_list
+            if c.args and c.args[0] == "agent_error"
+        ]
+        assert any(
+            c.args[1].get("error_type") == "cancelled_by_user" for c in error_events
+        )
+
+
+def test_run_handoff_timeout_fast_exit():
+    """Sprint 5.6: 'Execution handoff timeout' must NOT retry — single attempt only."""
+    from unittest.mock import MagicMock, patch
+
+    from neurocad.core.agent import run
+    from neurocad.core.executor import ExecResult
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.complete.return_value.content = "code"
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"), \
+         patch("neurocad.core.agent.extract_code_blocks", return_value=["code"]), \
+         patch("neurocad.core.agent._execute_with_rollback") as mock_exec, \
+         patch("neurocad.core.agent.audit_log") as mock_audit:
+        mock_exec.return_value = ExecResult(
+            ok=False,
+            new_objects=[],
+            error="Execution handoff timeout",
+        )
+        result = run("heavy code", mock_doc, mock_adapter, history)
+        assert result.ok is False
+        assert result.attempts == 1
+        assert mock_exec.call_count == 1
+        assert "Split the script" in (result.error or "")
+        error_events = [
+            c for c in mock_audit.call_args_list
+            if c.args and c.args[0] == "agent_error"
+        ]
+        assert any(
+            c.args[1].get("error_type") == "handoff_timeout" for c in error_events
+        )
 
 
 if __name__ == "__main__":

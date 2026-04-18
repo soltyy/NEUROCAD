@@ -110,8 +110,10 @@ neurocad/
 │  core/executor.py → core/validator.py → core/exporter   │
 │  tokenize pre_check / whitelist exec / State+Shape      │
 ├─────────────────────────────────────────────────────────┤
-│  FreeCAD Python API  (Part only MVP)                    │
-│  App.Document · Part · FreeCADGui                       │
+│  FreeCAD Python API  (Part, PartDesign, Sketcher,       │
+│                       Draft, Mesh — full scope as of 5.7)│
+│  App.Document · Part · PartDesign · Sketcher · Draft    │
+│  (FreeCADGui blocked: headless-only execution)          │
 └─────────────────────────────────────────────────────────┘
 ```
 

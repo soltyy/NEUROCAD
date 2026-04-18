@@ -124,3 +124,10 @@ def test_save_includes_max_created_objects():
     parsed = json.loads(written)
     assert parsed["max_created_objects"] == 500
     assert parsed["provider"] == "openai"
+
+
+def test_load_includes_exec_handoff_timeout():
+    """Sprint 5.6: load() exposes exec_handoff_timeout_s with default 60.0."""
+    with patch.object(Path, "exists", return_value=False):
+        config = load()
+    assert config["exec_handoff_timeout_s"] == 60.0

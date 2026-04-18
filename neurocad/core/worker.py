@@ -3,6 +3,7 @@
 import threading
 from collections.abc import Callable
 
+from ..config.config import load as load_config
 from ..ui.compat import QtCore, Signal, Slot
 from .agent import AgentCallbacks
 from .agent import run as agent_run
@@ -148,8 +149,16 @@ class LLMWorker:
             code_preview=code[:200],
         )
         self._schedule_main(self._on_exec_needed, code, attempt)
-        if not self._exec_event.wait(timeout=15.0):
-            log_error("worker.exec", "timed out waiting for main-thread exec result")
+        try:
+            timeout_s = float(load_config().get("exec_handoff_timeout_s", 60.0))
+        except Exception:
+            timeout_s = 60.0
+        if not self._exec_event.wait(timeout=timeout_s):
+            log_error(
+                "worker.exec",
+                "timed out waiting for main-thread exec result",
+                timeout_s=timeout_s,
+            )
             return {"ok": False, "new_objects": [], "error": "Execution handoff timeout"}
         if self._cancelled.is_set():
             log_warn("worker.exec", "cancelled while waiting for exec result")

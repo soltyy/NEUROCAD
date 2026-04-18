@@ -19,6 +19,7 @@ DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TIMEOUT = 180.0
 DEFAULT_MAX_CREATED_OBJECTS = 1000
+DEFAULT_EXEC_HANDOFF_TIMEOUT_S = 60.0
 
 
 def _get_config_dir() -> Path:
@@ -59,6 +60,7 @@ def load() -> dict[str, Any]:
             "max_created_objects": DEFAULT_MAX_CREATED_OBJECTS,
             "audit_log_enabled": DEFAULT_AUDIT_LOG_ENABLED,
             "snapshot_max_chars": DEFAULT_SNAPSHOT_MAX_CHARS,
+            "exec_handoff_timeout_s": DEFAULT_EXEC_HANDOFF_TIMEOUT_S,
         }
 
     with open(config_file, encoding="utf-8") as f:
@@ -70,6 +72,7 @@ def load() -> dict[str, Any]:
     data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
     data.setdefault("audit_log_enabled", DEFAULT_AUDIT_LOG_ENABLED)
     data.setdefault("snapshot_max_chars", DEFAULT_SNAPSHOT_MAX_CHARS)
+    data.setdefault("exec_handoff_timeout_s", DEFAULT_EXEC_HANDOFF_TIMEOUT_S)
     return data
 
 

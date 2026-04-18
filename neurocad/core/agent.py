@@ -59,6 +59,13 @@ def _categorize_error(error: str) -> str:
     return "runtime"
 
 
+def _re_search_invalid_name(error: str) -> str | None:
+    """Extract the object name from 'Validation failed for NAME: ...' messages."""
+    import re as _re
+    m = _re.search(r"validation failed for (\S+?):", error, _re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 def _is_blocked_import(error: str) -> bool:
     """Return True if the blocked token is 'import' or 'from'."""
     if error is None:
@@ -73,8 +80,21 @@ def _is_blocked_import(error: str) -> bool:
     return False
 
 
-def _make_feedback(error: str, category: str) -> str:
-    """Return a concise user-facing feedback message."""
+def _make_feedback(
+    error: str,
+    category: str,
+    block_idx: int = 1,
+    total_blocks: int = 1,
+) -> str:
+    """Return a concise user-facing feedback message.
+
+    block_idx / total_blocks describe the failed block's position in the LLM
+    response (1-based). Used to specialize the NameError branch: in a
+    multi-block response, most NameErrors after block 1 come from naming
+    drift — the LLM renamed a variable between blocks (major_d → major_diameter,
+    shank_h → shank_length, etc.). The specialized branch gives the LLM a
+    concrete corrective.
+    """
     if category == "blocked_token":
         error_lower = error.lower()
         # Extract the blocked token name from the error message, e.g. "Blocked token 'os' found at line 3"
@@ -125,6 +145,16 @@ def _make_feedback(error: str, category: str) -> str:
         )
     if category == "validation":
         error_lower = error.lower()
+        if "shape is invalid" in error_lower:
+            return (
+                "Validation failed: shape is invalid — geometry was computed but "
+                "OCCT flagged it as malformed (self-intersection, zero-area face, "
+                "non-manifold edge). Most common source: boolean Fuse/Cut of two "
+                "shapes that share a degenerate face, or sweeping along a path "
+                "with a tight turn. Fix: call shape.fix() or shape.removeSplitter() "
+                "on the problematic intermediate; verify each input with "
+                "shape.isValid() before the next boolean."
+            )
         if "shape is null" in error_lower:
             return (
                 "Validation failed: shape is null — an upstream object failed to compute its shape. "
@@ -133,6 +163,34 @@ def _make_feedback(error: str, category: str) -> str:
                 "Avoid mixing PartDesign::Body features with Part WB boolean operations outside the Body."
             )
         if "touched" in error_lower and "invalid" in error_lower:
+            # If the invalid object name looks thread-related, give the
+            # thread-specific diagnosis (far more common in dog-food than
+            # fillet issues). Otherwise fall back to the fillet diagnosis.
+            name_re = _re_search_invalid_name(error)
+            is_thread_object = (
+                name_re
+                and any(token in name_re.lower()
+                        for token in ("thread", "bolt", "sweep", "helix", "cut"))
+            )
+            if is_thread_object:
+                return (
+                    "Validation failed: object state ['Touched', 'Invalid'] on a "
+                    "thread-related object. OCCT rejected the Part::Cut of the "
+                    "helical sweep from the bolt shank. Checklist: "
+                    "(1) `sweep.Shape.isValid()` must be True before Cut — if not, "
+                    "rebuild the profile (closed, radial, INTERSECTS the shank — "
+                    "not tangent); "
+                    "(2) helix must STRICTLY fit inside the shank length along Z "
+                    "— `helix.Height < shank.Height`; "
+                    "(3) keep thread ≤ 10 turns (`thread_h ≤ 10 * pitch`) — OCCT "
+                    "boolean fails on long helices; "
+                    "(4) use `sw.Frenet = True`; "
+                    "(5) cut directly from shank or body: `Cut.Base = body; "
+                    "Cut.Tool = sweep` — NEVER fuse a cylinder with the sweep before "
+                    "cutting (that swallows the thread profile); "
+                    "(6) if it still fails, retry with a shorter thread_h and "
+                    "smaller thread_depth (e.g. depth = 0.6 × canonical)."
+                )
             return (
                 "Validation failed: object state ['Touched', 'Invalid'] — the geometry could not be computed. "
                 "Most common cause: Part::Fillet or Part::Chamfer applied to an object that contains helical "
@@ -144,11 +202,22 @@ def _make_feedback(error: str, category: str) -> str:
             )
         return f"Validation failed: {error}"
     if category == "timeout":
+        if "handoff" in error.lower():
+            return (
+                "Execution handoff timed out — the generated code took longer than the "
+                "handoff window to execute on the main thread. The code is likely too "
+                "large or does too many heavy boolean operations in one block. "
+                "Split the script into 2–3 smaller fenced blocks (each ≤ 80 lines) "
+                "and keep each boolean/cut operation isolated, so the executor can "
+                "recompute incrementally."
+            )
         return "Execution timed out."
     if category == "llm_transport":
         return f"LLM error: {error}"
     # Runtime: check for known patterns
     error_lower = error.lower()
+    if error_lower.strip().startswith("cancelled"):
+        return "Cancelled by user."
     if "is not a document object type" in error_lower:
         import re as _re
         m = _re.search(r"'([^']+)' is not a document object type", error)
@@ -163,18 +232,55 @@ def _make_feedback(error: str, category: str) -> str:
                 "Example: copies = []; shape.rotate(center, axis, angle_deg) in loop; "
                 "Part::Compound with Links = [...] for grouping without fusion."
             )
+        if bad_type == "PartDesign::InvoluteGear":
+            return (
+                "'PartDesign::InvoluteGear' is NOT available in stock FreeCAD 1.1 — "
+                "it requires the external Gears Workbench addon. "
+                "Use the Part WB gear approximation instead: "
+                "(1) parameterize teeth_n, module_m, pitch_r, root_r, tip_r; "
+                "(2) build a base Part::Revolution disc of radius root_r; "
+                "(3) create one trapezoidal tooth as Part::Box placed at (root_r, -w/2, 0); "
+                "(4) replicate with a Python loop `for i in range(teeth_n): c = tooth.Shape.copy(); "
+                "c.rotate(center, Z_axis, i*360/teeth_n); copies.append(c)`; "
+                "(5) wrap via `feat.Shape = Part.makeCompound(copies)`; "
+                "(6) fuse disc + teeth compound via Part::MultiFuse."
+            )
         return f"Unknown object type '{bad_type}'. Check the exact type string."
     if "is not defined" in error_lower:
         import re as _re
         m = _re.search(r"name '(\w+)' is not defined", error)
         varname = m.group(1) if m else ""
+
+        # Cross-block naming drift — dominant failure mode in multi-block
+        # responses (14+ cases in 2026-04-18 dog-food). If this is NOT the
+        # first block, the LLM almost certainly renamed a variable between
+        # blocks instead of re-declaring it identically.
+        if total_blocks > 1 and block_idx > 1:
+            return (
+                f"NameError in Block {block_idx}/{total_blocks}: '{varname}' is not defined. "
+                f"CRITICAL: each ```python``` block runs in a FRESH namespace — "
+                f"variables from Block 1 are NOT visible here. You MUST re-declare "
+                f"EVERY parameter at the top of EVERY block using IDENTICAL names "
+                f"from the canonical naming table. Common drift patterns to avoid: "
+                f"major_d vs major_diameter / diameter / d; "
+                f"shank_h vs shank_length / length / L; "
+                f"pitch vs thread_pitch / p; "
+                f"head_h vs head_height / hh; "
+                f"thread_h vs thread_length / tl; "
+                f"teeth_n vs num_teeth / n_teeth. "
+                f"Regenerate keeping variable names CONSISTENT across all blocks. "
+                f"If '{varname}' refers to a FreeCAD object created earlier, re-fetch it: "
+                f"{varname} = doc.getObject('ObjectName')."
+            )
+
+        # Single-block response — fall back to the scoping / carry-over diagnosis.
         return (
-            f"NameError: '{varname}' is not defined. Two common causes: "
-            f"(1) Variable from a previous request — define it at the top of this script, "
-            f"or retrieve the existing object with obj = doc.getObject('ObjectName'); "
-            f"(2) Variable defined inside an 'if' block but used outside its scope — "
-            f"always define parameters (dimensions, flags) unconditionally at the top of "
-            f"the script, not inside conditional branches."
+            f"NameError: '{varname}' is not defined. Common causes: "
+            f"(1) Variable defined inside an 'if' / 'for' block but used outside its scope — "
+            f"move declarations unconditionally to the top of the script; "
+            f"(2) Variable from a previous user request — re-declare it here, "
+            f"or retrieve the existing FreeCAD object via obj = doc.getObject('ObjectName'); "
+            f"(3) Typo — check spelling against your own earlier definitions."
         )
     if "unit mismatch" in error_lower or "quantity::operator" in error_lower:
         return (
@@ -196,6 +302,16 @@ def _make_feedback(error: str, category: str) -> str:
             "Rotation(yaw_deg, pitch_deg, roll_deg), "
             "Rotation(x, y, z, w) for quaternion. "
             "Do NOT pass a plain tuple or a single float."
+        )
+    if "list index out of range" in error_lower:
+        return (
+            "IndexError: list index out of range. Common FreeCAD causes: "
+            "(1) edge.Vertexes[1] on a closed circular/arc edge — circular edges "
+            "have only 1 vertex; iterate with `for v in edge.Vertexes` or check "
+            "`len(edge.Vertexes) >= 2` first. "
+            "(2) shape.Faces[0] on a wire or compound without faces. "
+            "(3) doc.Objects[i] when the document is empty. "
+            "Always validate collection length before index access."
         )
     if "sketchobject" in error_lower and "has no attribute 'support'" in error_lower:
         return (
@@ -533,6 +649,7 @@ def run(
         block_error = None
         block_category = None
         block_feedback = None
+        failed_block_idx: int | None = None
 
         for idx, block in enumerate(blocks, start=1):
             log_info(
@@ -571,7 +688,13 @@ def run(
                 if block_error is None:
                     block_error = "Unknown error"
                 block_category = _categorize_error(block_error)
-                block_feedback = _make_feedback(block_error, block_category)
+                block_feedback = _make_feedback(
+                    block_error,
+                    block_category,
+                    block_idx=idx,
+                    total_blocks=len(blocks),
+                )
+                failed_block_idx = idx
                 log_warn(
                     "agent.run",
                     "block execution failed",
@@ -647,6 +770,66 @@ def run(
             assert feedback is not None
             assert last_error is not None
             assert category is not None
+
+            # Fast-exit: user cancellation — do not retry.
+            if last_error.strip().lower().startswith("cancelled"):
+                log_info(
+                    "agent.run",
+                    "cancelled by user — exiting retry loop",
+                    attempt=attempts,
+                )
+                audit_log(
+                    "agent_error",
+                    {
+                        "error_type": "cancelled_by_user",
+                        "user_prompt_preview": text,
+                        "provider": getattr(adapter, "provider", type(adapter).__name__),
+                        "model": getattr(adapter, "model", "unknown"),
+                        "document_name": getattr(doc, "Name", None),
+                        "attempts": attempts,
+                        "error": "Cancelled by user",
+                        "rollback_count": total_rollback_count,
+                    },
+                    correlation_id=get_correlation_id(),
+                )
+                return AgentResult(
+                    ok=False,
+                    attempts=attempts,
+                    error="Cancelled by user",
+                    new_objects=[],
+                    rollback_count=total_rollback_count,
+                )
+
+            # Fast-exit: handoff timeout — the same heavy code will just time
+            # out again on retry, so do not waste tokens.
+            if category == "timeout" and "handoff" in last_error.lower():
+                log_info(
+                    "agent.run",
+                    "handoff timeout — exiting retry loop",
+                    attempt=attempts,
+                )
+                audit_log(
+                    "agent_error",
+                    {
+                        "error_type": "handoff_timeout",
+                        "user_prompt_preview": text,
+                        "provider": getattr(adapter, "provider", type(adapter).__name__),
+                        "model": getattr(adapter, "model", "unknown"),
+                        "document_name": getattr(doc, "Name", None),
+                        "attempts": attempts,
+                        "error": last_error,
+                        "rollback_count": total_rollback_count,
+                    },
+                    correlation_id=get_correlation_id(),
+                )
+                return AgentResult(
+                    ok=False,
+                    attempts=attempts,
+                    error=feedback,
+                    new_objects=[],
+                    rollback_count=total_rollback_count,
+                )
+
             history.add(Role.FEEDBACK, feedback)
             log_warn(
                 "agent.run",
@@ -669,6 +852,7 @@ def run(
                     "error_category": category,
                     "new_object_names": all_new_objects,
                     "block_count": len(blocks),
+                    "failed_block_idx": failed_block_idx,
                     "rollback_count": block_rollback_count,
                     "notifications": attempt_notifications,
                     "provider": getattr(adapter, "provider", type(adapter).__name__),

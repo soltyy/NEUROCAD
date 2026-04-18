@@ -1,5 +1,17 @@
-# NeuroCad · Sprint Plans v0.8
-**Дата:** 2026-04-13 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
+# NeuroCad · Sprint Plans v1.6
+**Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
+
+> **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
+> жёстко сужали capability scope до Part WB («только Part, PartDesign /
+> Sketcher / Draft / Mesh — post-MVP»), чтобы стабилизировать executor и
+> transaction pipeline. Этот gate закрыт: PartDesign, Sketcher, Draft и Mesh
+> **включены в основной scope**, whitelist FreeCAD-типов в
+> `tests/test_prompt_recipe.py::VALID_OBJECT_TYPES` покрывает все четыре
+> workbench'а. Начиная со Sprint 5.8 новые тикеты могут расширять capability
+> scope без ссылки на «MVP». Правила останова отдельных старых спринтов
+> оставлены как есть (исторический контекст), но к новым задачам применяется
+> только общее ограничение: изменения threading/transaction/sandbox по-прежнему
+> require explicit sprint scope.
 
 ## Оглавление
 
@@ -15,7 +27,15 @@
 - [Sprint 5.3 — Naming Consistency](#sprint-53--naming-consistency)
 - [Sprint 5.4 — LLM Integration, Auth UX, Multi-Step Execution, and Audit Logging](#sprint-54--llm-integration-auth-ux-multi-step-execution-and-audit-logging)
 - [Sprint 5.5 — Math Namespace + Geometry Context + Placement Grounding](#sprint-55--math-namespace--geometry-context--placement-grounding)
-- [Сводная таблица: что изменилось от v0.1 → v0.8](#сводная-таблица-что-изменилось-от-v01--v08)
+- [Sprint 5.6 — Cancellation Fast-Exit + Handoff Timeout Tuning + Runtime Feedback Expansion](#sprint-56--cancellation-fast-exit--handoff-timeout-tuning--runtime-feedback-expansion)
+- [Sprint 5.7 — Complex Task Success: Recipe Fix + Multi-Block Protocol + Static Verifier](#sprint-57--complex-task-success-recipe-fix--multi-block-protocol--static-verifier)
+- [Sprint 5.8 — Parametric Recipes + Multi-Block Scoping + Gear Reality Check](#sprint-58--parametric-recipes--multi-block-scoping--gear-reality-check)
+- [Sprint 5.9 — Realism: Chamfers, Fillets, Visual Detail](#sprint-59--realism-chamfers-fillets-visual-detail)
+- [Sprint 5.10 — Thread Position + Pitch Derivation (no hardcoded constants)](#sprint-510--thread-position--pitch-derivation-no-hardcoded-constants)
+- [Sprint 5.11 — Thread Cut Actually Happens: makePipeShell + Volume Assertion](#sprint-511--thread-cut-actually-happens-makepipeshell--volume-assertion)
+- [Sprint 5.12 — Truly Parametric Template: Placeholder Syntax + Parse Instructions + ISO 4014/4017](#sprint-512--truly-parametric-template-placeholder-syntax--parse-instructions--iso-40144017)
+- [Sprint 5.13 — Naming Contract + defaults.py Bug Fixes (external audit)](#sprint-513--naming-contract--defaultspy-bug-fixes-external-audit)
+- [Сводная таблица: что изменилось от v0.1 → v1.6](#сводная-таблица-что-изменилось-от-v01--v16)
 
 ---
 
@@ -567,7 +587,374 @@ Sprint 3 принимается как завершённый этап **с по
 
 ---
 
-## Сводная таблица: что изменилось от v0.1 → v0.8
+# Sprint 5.6 — Cancellation Fast-Exit + Handoff Timeout Tuning + Runtime Feedback Expansion
+**Нед. 16 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.5 закрыт как baseline. Sprint 5.6 не меняет main-thread execution semantics, FreeCAD transaction path, threading model или sandbox policy. Он устраняет четыре класса провалов, зафиксированных в dog-food-сессии 2026-04-14 (аудит-лог за 6 часов: 55 attempts, success rate 36%). Stop-button был добавлен пользовательским UX-слоем ранее, но agent retry loop его «не замечал» — Cancelled попадал в обычный runtime-цикл и тратил токены на бесполезные ретраи.
+
+## Цель
+
+Устранить четыре класса провалов, выявленных в реальной сессии пользователя:
+
+1. **Cancellation retry leak**: после нажатия Stop экзекутор возвращает `error="Cancelled"`, agent трактует это как обычный runtime-error и делает MAX_RETRIES=3, расходуя 2 лишних LLM-запроса и дублируя сообщение `Max retries exceeded: Cancelled` в audit.
+2. **Handoff timeout loop + слабый feedback**: хардкод 15 s в `worker._request_exec` срабатывает на сложных сборках (болт M24 с резьбой, bicycle frame); agent retryит тот же тяжёлый код и таймаутит снова; generic feedback «Execution timed out» не подсказывает LLM, что делать.
+3. **`list index out of range` без hint**: частая ошибка `edge.Vertexes[1]` на круговых рёбрах (у них `len==1`), generic feedback не даёт направления для исправления.
+4. **`Shape is invalid` vs `Shape is null`**: оба попадают в категорию `validation`, но причины и фиксы разные. `null` = shape не вычислена; `invalid` = вычислена, но OCCT считает её malformed (self-intersection, zero-area face).
+
+Дополнительно: `exec_handoff_timeout_s` вынесен в `config.json` (default 60 s, раньше был хардкод 15 s); новые события `cancelled_by_user` и `handoff_timeout` в audit-лог для последующего анализа.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-022A  / Developer / Cancellation fast-exit в agent.run (нет retry после "Cancelled")   / planned
+2. NC-DEV-CORE-022B  / Developer / Handoff timeout → config + feedback "разбей на блоки" (no retry)   / planned
+3. NC-DEV-CORE-022C  / Developer / _make_feedback для "list index out of range" и "Shape is invalid" / planned
+4. NC-DEV-DOC-006    / Developer / Обновить doc/SPRINT_PLANS.md + README + оглавление                / planned
+5. NC-PM-REVIEW-010  / PM        / DoD-чеклист + ручные тесты для пользователя                       / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-022A** | Developer | 1 | Cancellation fast-exit: после первой «Cancelled» попытки agent завершается без retry | `core/agent.py`, `tests/test_agent.py` | В `_make_feedback` runtime-ветка первой проверкой распознаёт строку, начинающуюся на `"cancelled"` → возвращает `"Cancelled by user."`; в `agent.run` retry-loop перед `history.add(Role.FEEDBACK, ...)` — fast-exit: один `audit_log("agent_error", {"error_type": "cancelled_by_user", ...})` и `AgentResult(ok=False, attempts=<текущий>, error="Cancelled by user")`; regression-тест `test_run_cancellation_fast_exit` подтверждает `mock_exec.call_count == 1`, `result.attempts == 1`, `result.error == "Cancelled by user"` | `TASK CODE: NC-DEV-CORE-022A` / Проблема: воркер при нажатии Stop возвращает `{"ok": False, "error": "Cancelled"}`, agent.run трактует это как обычный runtime error → 3 retries подряд → `Max retries exceeded: Cancelled` в audit. Решение: (1) в `_make_feedback` runtime-ветка первой же проверкой ловит `error_lower.strip().startswith("cancelled")` и возвращает `"Cancelled by user."`; (2) в `agent.run` в ветке «At least one block failed» перед `history.add(Role.FEEDBACK, feedback)` вставить fast-exit: если `last_error.strip().lower().startswith("cancelled")` — записать один `audit_log("agent_error", {"error_type": "cancelled_by_user", ...})` и вернуть `AgentResult(ok=False, attempts=attempts, error="Cancelled by user", new_objects=[], rollback_count=total_rollback_count)`. Не менять `worker.cancel()`, `_on_stop()` панели, threading semantics или transaction path. |
+| **NC-DEV-CORE-022B** | Developer | 1 | Handoff timeout: из конфига (default 60s) + actionable feedback «split the script» + fast-exit | `core/worker.py`, `core/agent.py`, `config/config.py`, `tests/test_worker.py`, `tests/test_agent.py`, `tests/test_config.py` | `load_config()` экспонирует `exec_handoff_timeout_s` (default 60.0); `worker._request_exec` читает это значение при каждом вызове (`try/except` → fallback 60.0); `_make_feedback` для `category="timeout"` при наличии подстроки «handoff» в error возвращает сообщение с фразой «Split the script»; в `agent.run` при `category == "timeout"` и `"handoff" in last_error.lower()` — fast-exit c `audit_log` типа `handoff_timeout`; regression-тесты подтверждают (a) timeout читается из конфига, (b) fallback-ветка работает, (c) agent не ретраит handoff timeout | `TASK CODE: NC-DEV-CORE-022B` / Проблема: в `worker._request_exec` хардкод `timeout=15.0` — слишком мало для сложных болтов с резьбой и сборок, поэтому exec handoff таймаутит; при этом agent ретраит тот же тяжёлый код → повторный таймаут. Решение: (1) в `config/config.py` добавить `DEFAULT_EXEC_HANDOFF_TIMEOUT_S = 60.0` и ключ `exec_handoff_timeout_s` в оба return-dict внутри `load()`; (2) в `core/worker.py` импортировать `from ..config.config import load as load_config`, и в `_request_exec` перед `self._exec_event.wait(...)` вычислить `timeout_s = float(load_config().get("exec_handoff_timeout_s", 60.0))` (с `try/except Exception: timeout_s = 60.0`); (3) в `_make_feedback` категория `"timeout"`: при наличии `"handoff" in error.lower()` вернуть расширенное сообщение с фразой «Split the script into 2–3 smaller fenced blocks»; (4) в `agent.run` в ветке handled-failure добавить fast-exit для handoff-timeout аналогично Cancellation (один `audit_log("agent_error", {"error_type": "handoff_timeout", ...})`). Не трогать threading model и transaction path. |
+| **NC-DEV-CORE-022C** | Developer | 2 | Feedback-ветки для `list index out of range` и `Shape is invalid` | `core/agent.py`, `tests/test_agent.py` | В `_make_feedback` runtime-блок (после sketchobject/support, до must-be-bool) — ветка `"list index out of range" in error_lower` с упоминанием circular edges / `edge.Vertexes[1]` / `shape.Faces[0]` / `len()` перед индексом; в validation-блоке (ДО ветки `"shape is null"`) — ветка `"shape is invalid"` с рекомендацией `shape.fix()` / `shape.removeSplitter()` / `shape.isValid()`; regression-тесты подтверждают наличие ключевых фраз | `TASK CODE: NC-DEV-CORE-022C` / Проблема: `edge.Vertexes[1]` на круговых/арочных рёбрах → IndexError (у закрытой окружности `len == 1`); `Shape is invalid` отличается от `Shape is null` (вычислено, но malformed), но оба получают generic «Validation failed». Решение: (1) в `_make_feedback` в runtime-блоке добавить ветку `"list index out of range"` с конкретными FreeCAD-паттернами: `edge.Vertexes[1]` на круговой дуге, `shape.Faces[0]` на wire/compound, `doc.Objects[i]` на пустом документе; (2) в validation-блоке добавить ветку `"shape is invalid"` ПЕРЕД `"shape is null"` с hint-ами `shape.fix()`, `shape.removeSplitter()`, `shape.isValid()` между boolean операциями. Не менять сигнатуры, не расширять capability scope. |
+| **NC-DEV-DOC-006** | Developer | 3 | Обновить `doc/SPRINT_PLANS.md` + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел «Sprint 5.6» присутствует в оглавлении и в теле документа в каноническом формате (Статус, Предусловие, Цель, Rolling Plan, Задачи-таблица, Правила останова); README отражает текущий статус Sprint 5.6; `doc/RELEASE_NOTES.md` содержит v0.9 ↔ Sprint 5.6 bullet-пункты; `grep -c "Sprint 5.6" doc/SPRINT_PLANS.md` ≥ 3 | `TASK CODE: NC-DEV-DOC-006` / Обновить sprint-doc в стиле Sprint 5.5 (заголовок, статус с датой, предусловие, цель, rolling plan, таблица задач, правила останова). В README поднять статус с Sprint 5.4/5.5 до Sprint 5.6. В RELEASE_NOTES добавить v0.9. Сводная таблица переименовывается в v0.1 → v0.9 с новыми строками: Cancellation, Handoff timeout, IndexError hint, Invalid shape hint. Не переписывать существующие спринты. |
+| **NC-PM-REVIEW-010** | PM | 4 | DoD-чеклист + ручные тесты M1–M6 | Закрытый checklist | Все 10 пунктов DoD approved; пройдены шесть ручных сценариев M1–M6 в живом FreeCAD 1.1 | (1) `_make_feedback("Cancelled", "runtime")` → `"Cancelled by user."` (2) Cancelled exec → агент возвращается с `attempts == 1`, не ретраит (3) Audit логирует один `agent_error` с `error_type == "cancelled_by_user"` (4) `load_config()["exec_handoff_timeout_s"] == 60.0` по умолчанию (5) `worker._request_exec` использует значение из `load_config()` (6) `_make_feedback` для handoff timeout содержит «Split the script» (7) Handoff timeout → агент не ретраит (attempts == 1, audit `handoff_timeout`) (8) `_make_feedback` даёт конкретные hints для `list index out of range` и `Shape is invalid` (9) `doc/SPRINT_PLANS.md` содержит раздел Sprint 5.6 в каноническом формате (10) `pytest --tb=short` clean, существующие 204 теста не регрессируют |
+
+**Правила останова Sprint 5.6:** изменение threading model / main-thread execution semantics / FreeCAD transaction path → rejected / ослабление sandbox policy (разблокировка `import`, whitelist новых модулей) → rejected / расширение capability scope (новые FreeCAD API, новые object types) без benchmark evidence → rejected / `Cancelled` или `handoff timeout` продолжают попадать в retry loop → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.7 — Complex Task Success: Recipe Fix + Multi-Block Protocol + Static Verifier
+**Нед. 17 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.6 закрыт как baseline. Sprint 5.7 не меняет main-thread execution semantics, FreeCAD transaction path, threading model, sandbox policy или capability scope. Он чинит **корректность рецептов** в `DEFAULT_SYSTEM_PROMPT` и добавляет **multi-block protocol**, чтобы LLM перестал генерировать 9000-символьные монолиты. Мотивация — пользовательская цель: «Сделай сложный болт M30 с резьбой и шайбой» должен успешно выполняться, а не просто аккуратно проваливаться.
+
+## Цель
+
+Устранить три системных блокера успеха сложных запросов, которые Sprint 5.6 не мог исправить на feedback-уровне:
+
+1. **Бракованный recipe в prompt**: `DEFAULT_SYSTEM_PROMPT` рекомендовал `Part::LinearPattern` / `Part::Array` как «always reliable» пример для многоходовой резьбы. Эти типы не существуют в Part WB — LLM честно копировал и падал с `is not a document object type`. Это внутреннее противоречие промпта: раздел `## Blocked` называл их несуществующими, а раздел `## PART V — Bolt` рекомендовал как основной вариант.
+2. **Монолитный вывод**: промпт явно требовал `no markdown fences`, что вынуждало LLM выдавать весь болт+резьба+шайба одним блоком (9429 символов в dog-food-логе) → handoff timeout. Несколько fenced-блоков уже поддерживались executor-ом, но в промпте об этом не было ни слова.
+3. **Отсутствие регрессии для recipe**: ручная ревизия прямых советов в промпте ловит ошибки не раньше dog-food-сессии. Нужен static verifier, который гарантирует: каждый `doc.addObject(TYPE)` / `body.newObject(TYPE)` в промпте использует реально существующий FreeCAD-тип.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-023A  / Developer / Починить recipe в defaults.py (убрать Part::LinearPattern из позитивных примеров)  / planned
+2. NC-DEV-CORE-023B  / Developer / Multi-block protocol для assemblies в system prompt                                  / planned
+3. NC-DEV-CORE-023C  / Developer / Static recipe verifier (tests/test_prompt_recipe.py)                                  / planned
+4. NC-DEV-DOC-007    / Developer / Обновить doc/SPRINT_PLANS.md + README + RELEASE_NOTES                                / planned
+5. NC-PM-REVIEW-011  / PM        / DoD-чеклист + ручные dog-food тесты на живом FreeCAD                                 / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-023A** | Developer | 1 | Починить recipe в `DEFAULT_SYSTEM_PROMPT` — убрать `Part::LinearPattern` из позитивных примеров | `config/defaults.py` | В промпте нет `doc.addObject("Part::LinearPattern", ...)` / `Part::PolarPattern` / `Part::MultiTransform` / `Part::Array` в позитивных code-примерах; рекомендации заменены на Python-loop + `Part.makeCompound`; три места исправлены: «Fake thread via stacked discs» (строка ~568), «Bolt assembly patterns» (строка ~674), «Decorative thread — full example» (строка ~731); раздел `## Blocked` сохранён — LLM должен продолжать видеть, что эти типы не существуют | `TASK CODE: NC-DEV-CORE-023A` / Проблема: `DEFAULT_SYSTEM_PROMPT` одновременно (a) рекомендует `Part::LinearPattern` в разделе "Decorative thread" как "always reliable" и (b) перечисляет его в разделе "Blocked" как несуществующий. LLM чаще следует позитивному примеру. Решение: в трёх местах (fake-thread comment-block, bolt assembly bullet, decorative-thread example) заменить `doc.addObject("Part::LinearPattern", ...)` на Python-loop: `copies = []; for i in range(...): c = shape.copy(); c.translate(...); copies.append(c); pat = doc.addObject("Part::Feature", "ThreadPat"); pat.Shape = Part.makeCompound(copies)`. Раздел `## Blocked` оставить — он нужен как пояснение для LLM после неудачи. Добавить в пример финальный `Part::Cut` шаг (режем compound из shank), чтобы LLM видел полный путь. |
+| **NC-DEV-CORE-023B** | Developer | 1 | Multi-block protocol для assemblies в system prompt | `config/defaults.py` | Заголовок «Output format» разрешает fenced blocks для сложных сборок; новый раздел «Multi-block protocol for complex assemblies» со three-block canonical layout (bolt+thread+washer) и списком правил: ≤80 строк на блок, `doc.recompute()` в конце, переменные не persist между блоками → `doc.getObject("Name")`, Part::Cut изолированы в отдельный блок | `TASK CODE: NC-DEV-CORE-023B` / Проблема: промпт требовал `no markdown fences`, поэтому LLM генерировал один блок 9429 символов → handoff timeout на болте с резьбой. Executor уже поддерживает multi-block (`extract_code_blocks` возвращает список), но LLM об этом не знал. Решение: (1) в разделе "Output format" поменять "no markdown fences" на "simple → unfenced, complex → 2–3 fenced ```python``` blocks"; (2) добавить отдельный раздел "Multi-block protocol for complex assemblies" после "Workbench choice" — пример bolt+thread+washer в три блока (base primitives + initial fuse → thread helix/sweep/cut → washer separate), плюс 5 правил: doc.recompute() на конце, ≤80 строк, переменные не persist, doc.getObject() для re-fetch, block failure → skip subsequent. Не трогать executor и агент — multi-block поддержан с Sprint 5.4. |
+| **NC-DEV-CORE-023C** | Developer | 2 | Static recipe verifier | `tests/test_prompt_recipe.py` | Новый файл теста с 5 проверками: (1) sanity — >20 addObject examples в промпте, (2) все типы из VALID_OBJECT_TYPES whitelist (~40 типов из Part / PartDesign / Sketcher / Draft WB), (3) BLOCKED_OBJECT_TYPES (LinearPattern/PolarPattern/MultiTransform/Array) не появляются как constructor args, (4) блокированные типы упомянуты хотя бы как warnings, (5) multi-block protocol раздел присутствует с ```python блоками и `doc.getObject` | `TASK CODE: NC-DEV-CORE-023C` / Создать `tests/test_prompt_recipe.py`. Использовать regex `(?:doc\|body\|\w+)\.(?:addObject\|newObject)\s*\(\s*["\']([A-Za-z]+::\w+)["\']` для извлечения типов из `DEFAULT_SYSTEM_PROMPT`. Whitelist VALID_OBJECT_TYPES — 40+ типов Part / PartDesign / Sketcher. Blocklist BLOCKED_OBJECT_TYPES — 4 несуществующих Part::LinearPattern etc. Тесты fail с явным форматом: line N: <unknown type> — чтобы легко находить. Тесты должны проходить после задач 023A и 023B. |
+| **NC-DEV-DOC-007** | Developer | 3 | Обновить doc/SPRINT_PLANS.md + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел «Sprint 5.7» в каноническом формате; README указывает Sprint 5.7; RELEASE_NOTES содержит v1.0 ↔ Sprint 5.7 | `TASK CODE: NC-DEV-DOC-007` / Обновить документацию по аналогии с Sprint 5.5/5.6. Версия прыгает 0.9 → 1.0 (major prompt recipe fix + multi-block protocol — это граница MVP по корректности рецептов). |
+| **NC-PM-REVIEW-011** | PM | 4 | DoD-чеклист + ручные dog-food тесты | Закрытый checklist | Все 8 пунктов DoD approved; пройдены ручные тесты R1–R4 на живом FreeCAD 1.1 | (1) Static verifier все 5 тестов зелёные (2) В промпте нет `Part::LinearPattern` / `Part::Array` / `Part::PolarPattern` / `Part::MultiTransform` как constructor args (3) Раздел "Multi-block protocol" присутствует в промпте (4) Все `doc.addObject` / `body.newObject` типы в промпте входят в VALID_OBJECT_TYPES whitelist (5) `pytest --tb=short` clean (6) README упоминает Sprint 5.7 (7) RELEASE_NOTES имеет раздел 5.7 (8) Ручной тест «Сделай болт M24 с резьбой» завершается успешно хотя бы в 3 из 5 прогонов |
+
+**Правила останова Sprint 5.7:** изменение threading model / main-thread execution semantics / FreeCAD transaction path → rejected / ослабление sandbox policy → rejected / расширение capability scope (новые FreeCAD API, новые object types, новые workbenches) → rejected / возврат `Part::LinearPattern` в позитивные примеры → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.8 — Parametric Recipes + Multi-Block Scoping + Gear Reality Check
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.7 закрыт. Первый dog-food под новым multi-block протоколом выявил конкретные провалы: 2/9 (22%) вместо целевых 60%. Log analysis `scripts/dogfood_check.py --since "2026-04-18 10:00"` дал три чистых корневых причины: (1) LLM не переобъявляет параметры между блоками → `NameError` в 7/9 провалов; (2) `PartDesign::InvoluteGear` не существует как document-object-type в stock FreeCAD 1.1 (нужен Gears WB addon) — 2/9 провалов на шестерёнке; (3) Thread Cut → `['Touched', 'Invalid']` получает fillet-диагностику, хотя fillet не задействован — 3/9 провалов на болтах.
+
+## Цель
+
+Поднять dog-food success rate на R1–R4 с 22% до ≥ 60% за счёт правок **промпта и feedback-сообщений**, без изменений executor / threading / transaction / sandbox.
+
+1. **Parameter header в каждом блоке.** Multi-block protocol из Sprint 5.7 имел одну строку "variables do NOT persist" — LLM её игнорирует. Новый протокол явно требует re-declare всех численных констант в начале каждого блока, и canonical пример теперь параметризован (`major_d`, `pitch`, `minor_d = major_d - 1.226 * pitch`) — LLM учится паттерну и может масштабировать на M8…M48, а не только M24.
+2. **Gear без addon.** Заменить `PartDesign::InvoluteGear` (отсутствует в stock FreeCAD 1.1) на parametric Part WB approximation: base disc (Revolution) + trapezoidal tooth (Part::Box) + Python loop + makeCompound + MultiFuse. Добавить в `_make_feedback` конкретный hint если LLM всё равно попробует InvoluteGear. Удалить тип из VALID_OBJECT_TYPES whitelist, добавить в BLOCKED_OBJECT_TYPES.
+3. **Thread-specific Touched/Invalid.** Расширить `_make_feedback` — если имя невалидного объекта содержит `Thread`/`Bolt`/`Sweep`/`Helix`/`Cut`, давать thread-specific чеклист (sweep.isValid, helix в пределах shank, ≤ 10 turns, Frenet=True, Cut напрямую от shank без intermediate cylinder).
+
+**Non-goals:** изменение threading model / transaction path / sandbox policy; расширение capability scope на новые workbenches; добавление addon-зависимых API.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-024A  / Developer / Multi-block protocol: parameter header + parametric bolt example  / planned
+2. NC-DEV-CORE-024B  / Developer / Убрать PartDesign::InvoluteGear из recipe + whitelist + feedback  / planned
+3. NC-DEV-CORE-024C  / Developer / Thread-specific ветка в Touched/Invalid feedback                   / planned
+4. NC-DEV-DOC-008    / Developer / Sprint 5.8 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES         / planned
+5. NC-PM-REVIEW-012  / PM        / DoD + повторный dog-food через scripts/dogfood_check.py           / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-024A** | Developer | 1 | Переписать Multi-block protocol: parameter header + параметрический bolt пример | `config/defaults.py` | Раздел «Multi-block protocol for complex assemblies» содержит: блок `CRITICAL: every block is a FRESH Python namespace` с явным правилом о re-declare; блок `Parameter header` с ISO 261 pitch-таблицей и derived formulas (minor_d, shank_r, head_h); canonical bolt example полностью параметризован (major_d, pitch, thread_h = min(30.0, 10*pitch)); каждый из 3 блоков имеет собственный parameter header; правила пронумерованы и начинаются с "Parameter header first" | `TASK CODE: NC-DEV-CORE-024A` / Проблема: dog-food 2026-04-18 показал 7/9 провалов из-за `NameError: name 'pitch'/'head_height'/'major_diameter' is not defined` во втором или третьем блоке. LLM из Sprint 5.7 видит "variables do NOT persist" одной строкой и игнорирует. Решение: в `config/defaults.py` полностью переписать раздел "Multi-block protocol": (a) добавить CRITICAL-блок с жирным правилом: "Re-declare every numeric parameter at the top of every block"; (b) добавить "Parameter header" подраздел с ISO 261 coarse pitch таблицей и derived formulas; (c) переписать canonical 3-block пример: БЕЗ хардкода M24-specific чисел — использовать major_d/pitch/minor_d/shank_r/head_h/head_key/shank_h/thread_h; (d) каждый блок начинается с "parameter header" комментария + переобъявление; (e) thread_h = min(30.0, 10 * pitch) — явное ограничение ≤10 turns; (f) пересчитать rules list, поставив "Parameter header first" первым. Не трогать executor, transaction model или sandbox. |
+| **NC-DEV-CORE-024B** | Developer | 1 | Убрать `PartDesign::InvoluteGear` из recipe + whitelist + feedback | `config/defaults.py`, `tests/test_prompt_recipe.py`, `core/agent.py`, `tests/test_agent.py` | В `defaults.py` раздел "Gear" заменён на Part WB approximation (parameter header + Revolution disc + Part::Box tooth + Python loop + makeCompound + MultiFuse); `VALID_OBJECT_TYPES` больше не содержит `PartDesign::InvoluteGear`; `BLOCKED_OBJECT_TYPES` его содержит; `_make_feedback` для `"PartDesign::InvoluteGear' is not a document object type"` возвращает actionable hint с инструкциями построения через Part::Revolution + Part::Box loop; regression-тест `test_make_feedback_involute_gear_not_a_type` зелёный; `test_default_prompt_does_not_use_blocked_types_as_positive_examples` зелёный | `TASK CODE: NC-DEV-CORE-024B` / Проблема: 2/9 провалов в dog-food — LLM следует нашему recipe `doc.addObject("PartDesign::InvoluteGear", "GearProfile")`, FreeCAD 1.1 возвращает "'PartDesign::InvoluteGear' is not a document object type". Этот тип требует внешнего Gears Workbench addon. Решение: (1) В `defaults.py` раздел "Gear" переписать под Part WB: parameter header (teeth_n, module_m, pitch_r = teeth_n*module_m/2, root_r, tip_r, tooth_w), base disc через Part::Revolution от 0 до root_r, trapezoidal tooth как Part::Box с Placement от root_r вдоль +X, Python loop `for i in range(teeth_n): c = tooth.Shape.copy(); c.rotate(...)`, Part::Feature + Part.makeCompound(copies), Part::MultiFuse для disc+teeth. (2) В `tests/test_prompt_recipe.py` удалить `"PartDesign::InvoluteGear"` из VALID_OBJECT_TYPES, добавить в BLOCKED_OBJECT_TYPES с комментарием про addon requirement. (3) В `core/agent.py::_make_feedback` в ветке "is not a document object type" добавить case для `bad_type == "PartDesign::InvoluteGear"` с полным рецептом через Part WB. (4) Не вводить зависимость от Gears WB — это addon, который может отсутствовать у пользователя. |
+| **NC-DEV-CORE-024C** | Developer | 2 | Thread-specific ветка в Touched/Invalid feedback | `core/agent.py`, `tests/test_agent.py` | Функция `_re_search_invalid_name(error)` извлекает `NAME` из `"Validation failed for NAME: ..."`; в `_make_feedback` validation-ветке `touched and invalid`: если name содержит токен `thread`/`bolt`/`sweep`/`helix`/`cut`, возвращать thread-specific чеклист (sweep.Shape.isValid(), helix.Height < shank.Height, ≤10 turns, Frenet=True, Cut напрямую от body, retry с меньшим thread_h/depth); иначе — fallback на существующую fillet-диагностику; тест `test_make_feedback_touched_invalid_thread_specific` зелёный | `TASK CODE: NC-DEV-CORE-024C` / Проблема: 3/9 провалов dog-food — `"Validation failed for ThreadedBolt: ['Touched', 'Invalid']"`. Текущий feedback говорит "убери Fillet", но Fillet не задействован — OCCT валидирует сам Part::Cut результата sweep vs shank. Решение: добавить helper `_re_search_invalid_name(error) -> str | None` с regex `r"validation failed for (\S+?):"`, вернуть имя объекта. В `_make_feedback` в ветке `touched + invalid`: если name содержит substring из {thread, bolt, sweep, helix, cut} — выдать thread-специфичный чеклист (6 шагов: sweep.Shape.isValid(); helix.Height strictly ≤ shank.Height; thread ≤ 10 turns = thread_h ≤ 10*pitch; Frenet=True; Cut.Base=body, Cut.Tool=sweep без промежуточного Fuse; retry с shorter thread_h и меньшим thread_depth). Регрессия: существующий test_make_feedback_validation_touched_invalid (fillet-case) остаётся зелёным. |
+| **NC-DEV-DOC-008** | Developer | 3 | Sprint 5.8 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел "Sprint 5.8" в каноническом формате; README поднят до Sprint 5.8; RELEASE_NOTES содержит v1.1 ↔ Sprint 5.8 с dog-food baseline (2/9=22%) и целевой планкой ≥60% | `TASK CODE: NC-DEV-DOC-008` / По шаблону Sprint 5.7. Версия 1.0 → 1.1. Упомянуть конкретные результаты dog-food baseline и три корневые причины. |
+| **NC-PM-REVIEW-012** | PM | 4 | DoD + повторный dog-food через scripts/dogfood_check.py | Закрытый checklist | Все 8 пунктов DoD approved; новый dog-food прогон ≥ 60% на R1–R3 и 100% на R4 | (1) `VALID_OBJECT_TYPES` не содержит `PartDesign::InvoluteGear` (2) `BLOCKED_OBJECT_TYPES` содержит `PartDesign::InvoluteGear` (3) Прmpт содержит "Parameter header" секцию (4) Canonical bolt example использует `major_d`/`pitch`/`minor_d` вместо хардкода (5) `_make_feedback("... 'PartDesign::InvoluteGear' ...", "runtime")` содержит "Part WB" и "makeCompound" (6) Thread-related Touched/Invalid → чеклист с `Frenet`, `sweep.Shape.isValid()`, `10 * pitch` (7) pytest clean (229+ tests) (8) `python scripts/dogfood_check.py --since "..."` на новой сессии ≥ 60% pass rate |
+
+**Правила останова Sprint 5.8:** изменение threading model / main-thread execution semantics / FreeCAD transaction path → rejected / ослабление sandbox policy → rejected / введение зависимости от addon (Gears WB, Fasteners WB) без явного fallback → rejected / возврат `PartDesign::InvoluteGear` в положительные рецепты → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.9 — Realism: Chamfers, Fillets, Visual Detail
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.8 закрыт — запросы выполняются, dog-food ~больше 60%. Пользовательский визуальный feedback: «результат выглядит сильно упрощенным: нет граней, закруглений, выдавливаний… возможно есть конкретная инструкция которая упрощает, надо её убрать». Приложены фото реальных болтов ISO для сравнения — головка с фаской на торце, резьбовой заход с фаской, отчётливые переходные элементы.
+
+## Цель
+
+Устранить неявную инструкцию упрощения, которая толкает LLM генерировать спартанские примитивы без фасок/скруглений. Диагноз из [defaults.py](neurocad/config/defaults.py):
+
+1. **Canonical bolt example в multi-block protocol** не содержал ни одного `Part::Chamfer` — LLM копировал буквально и получал голый prism+cylinder.
+2. **WARNING на строке 898** формулировался негативно («DO NOT apply fillets to the final threaded body») — LLM обобщал до «никогда не использовать фаски».
+
+Фикс — две корректировки промпта:
+- **Canonical bolt example** дополнен фасками на хэд (все рёбра) и шанк (только круговые рёбра, фильтр по `e.Curve.__class__.__name__ == "Circle"`) ДО Fuse. Это даёт хэд-фаски и резьбовой заход как у реальных болтов.
+- **WARNING переформулирован в позитив**: «ИСПОЛЬЗУЙ фаски на примитивах ДО Fuse — поощряется». Технический ограничитель (не filet'ить финальное резьбовое тело после Cut) остался, но теперь выглядит как граничное условие, а не отговорка.
+- Добавлен отдельный раздел «Realism — chamfers and fillets are the default» перед rules-list с конкретными рекомендованными глубинами (head_ch = 0.08 × major_d, shank_ch = 0.04 × major_d, washer edge break = 0.05 × flange_h, gear root fillet = 0.15 × module_m).
+
+**Non-goals:** изменение threading/transaction/sandbox; расширение capability scope; новые FreeCAD API.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-025A  / Developer / Canonical bolt Block 1 + Part::Chamfer на хэд и шанк               / planned
+2. NC-DEV-CORE-025B  / Developer / Переформулировать WARNING про fillets в позитивную рекомендацию    / planned
+3. NC-DEV-CORE-025C  / Developer / Новый раздел «Realism» в промпте с рекомендованными размерами     / planned
+4. NC-DEV-DOC-009    / Developer / Sprint 5.9 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES        / planned
+5. NC-PM-REVIEW-013  / PM        / DoD + dog-food: визуальная проверка «болты выглядят реалистично» / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-025A** | Developer | 1 | Canonical bolt Block 1 + Part::Chamfer на head и shank | `config/defaults.py` | Block 1 содержит `Part::Chamfer "HeadChamfered"` на всех рёбрах hex prism (depth = `head_ch = 0.08 * major_d`); `Part::Chamfer "ShankChamfered"` на круговых рёбрах цилиндра (filter `e.Curve.__class__.__name__ == "Circle"`, depth = `shank_ch = 0.04 * major_d`); Fuse использует `head_chamfered` и `shank_chamfered` как Base/Tool, а не сырые примитивы; все промежуточные `.Visibility = False`; static verifier `tests/test_prompt_recipe.py` зелёный (типы в whitelist) | `TASK CODE: NC-DEV-CORE-025A` / Пользовательский feedback 2026-04-18: «нет граней, закруглений, выдавливаний». Canonical bolt recipe в multi-block protocol был слишком спартанским — LLM копировал буквально и выдавал голый prism+cylinder. Фикс: в Block 1 после создания head (Part::Prism) и shank (Part::Cylinder) добавить промежуточный Part::Chamfer каждый: (1) head_chamfered = Chamfer на ВСЕХ рёбрах hex prism с depth = head_ch; (2) shank_chamfered = Chamfer только на круговых рёбрах (filter `e.Curve.__class__.__name__ == "Circle"`) с depth = shank_ch — это thread-entry chamfer. Fuse принимает `head_chamfered` и `shank_chamfered`, не raw primitives. Параметр header расширен: head_ch = 0.08 * major_d, shank_ch = 0.04 * major_d. |
+| **NC-DEV-CORE-025B** | Developer | 1 | Переформулировать WARNING про fillets в позитив | `config/defaults.py` | Строка ~898 ранее: `WARNING — DO NOT apply Part::Fillet or Part::Chamfer to the final assembled+threaded body.`; теперь: `Chamfers and fillets — ENCOURAGED for realism. ALWAYS add Part::Chamfer / Part::Fillet to individual primitives BEFORE fusing.` Хард-ограничитель про «не filet'ить финальное тело после Cut» сохранён, но теперь как конкретное условие, не как запрет вообще; пример позитивного использования приведён (chamfer на head + fuse + cut thread — уже в canonical example) | `TASK CODE: NC-DEV-CORE-025B` / Заменить WARNING-блок на позитивный recommendation-блок. Начало: `# Chamfers and fillets — ENCOURAGED for realism:`. Указать что фаски на примитивы ДО Fuse = нормально и рекомендовано. Перечислить хэд/шанк/flange/gear с рекомендованными depth-формулами. Сохранить хард-ограничитель: «The ONLY hard restriction: do not apply Part::Fillet / Part::Chamfer to the final threaded body AFTER the thread Cut» с коротким техническим объяснением про OCCT `[Touched, Invalid]`. |
+| **NC-DEV-CORE-025C** | Developer | 2 | Раздел «Realism — chamfers and fillets are the default» | `config/defaults.py` | Новый раздел между Parameter header и Rules list; перечисляет конкретные рекомендации для hex head / cylindrical shank / fuse junction / washer edge / gear root; упоминает, что без явного "without simplifications" LLM ДОЛЖЕН добавить фаски; заканчивается hard rule «chamfers/fillets before Fuse, never after Cut» + ссылкой на canonical example | `TASK CODE: NC-DEV-CORE-025C` / Написать раздел непосредственно перед существующим `### Rules for multi-block code`. Заголовок: `### Realism — chamfers and fillets are the default, not an optional extra`. Список 5 пунктов с конкретными depth-формулами (hex head ~0.08×major_d, shank circles ~0.04×major_d, fuse junction fillet ~0.04×major_d, washer edge ~0.05×flange_h, gear root ~0.15×module_m). Завершить hard rule. |
+| **NC-DEV-DOC-009** | Developer | 3 | Обновить sprint plan + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Оглавление sprint plan содержит Sprint 5.9; раздел Sprint 5.9 в каноническом формате; README upgrade до Sprint 5.9; RELEASE_NOTES содержит v1.2 с фото-based diagnosis (реальный vs упрощённый болт) | `TASK CODE: NC-DEV-DOC-009` / По шаблону Sprint 5.8. Версия 1.1 → 1.2. В RELEASE_NOTES включить картинку-based motivation: пользователь показал фото реальных ISO болтов, наш бывший вывод имел голый prism+cylinder без фасок. |
+| **NC-PM-REVIEW-013** | PM | 4 | DoD + визуальная проверка | Закрытый checklist | (1) canonical bolt Block 1 содержит два Part::Chamfer (head + shank) (2) parameter header extended: head_ch, shank_ch (3) WARNING заменён на ENCOURAGED (4) раздел «Realism» присутствует до Rules list (5) static verifier зелёный (6) pytest 229+ без регрессий (7) визуальный dog-food: hex-head с видимыми фасками на корневой 3D-модели | — |
+
+**Правила останова Sprint 5.9:** изменение threading / transaction / sandbox → rejected / применение fillet/chamfer к финальному резьбовому телу после Cut → rejected / убрать canonical bolt example целиком → rejected / добавить instruction "simplify" / "no fillets" обратно → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.10 — Thread Position + Pitch Derivation (no hardcoded constants)
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.9 закрыт. Пользователь прогнал 6 dog-food запросов с фотографиями реальных ISO-болтов рядом: «проблема с резьбой во всех случаях, напоминаю ничего не должно быть захардкожено». Визуально: резьба располагается на **верхней** половине шанка (рядом с головой), а нижняя (свободный конец / tip) остаётся гладкой. У реальных ISO-болтов — ровно наоборот. Плюс в canonical example явно захардкожено `major_d = 24.0`, `pitch = 3.0`, `thread_h = min(30.0, 10 * pitch)` — 30-mm cap произвольный.
+
+## Цель
+
+Две правки промпта устраняют оба замечания:
+
+1. **Thread position fix.** В canonical Block 2 LLM получал `helix.Placement` по умолчанию (z=0,0,0), что при шанке `z=[0, shank_h]` клеит резьбу **у головы**, а не у кончика. Новый Block 2 явно вычисляет `thread_z_start = shank_h - thread_h` и ставит `helix.Placement` в эту точку — резьба от tip'а к голове с гладким плечом под головой (как на реальных ISO-болтах).
+
+2. **Выкинуть хардкод.** Единственная hand-set константа в parameter header теперь — `major_d` (берётся из user request, «M24» → 24.0). Остальное полностью деривативно:
+   - `pitch = _ISO_COARSE_PITCH[int(major_d)]` из встроенной ISO 261 таблицы (M3–M48)
+   - `shank_h = 3.0 * major_d` (можно override из user request)
+   - `thread_h = min(shank_h - major_d, 10 * pitch)` (без произвольного 30-mm cap)
+   - `thread_z_start = shank_h - thread_h`
+   - Все чамферы, flange dimensions, tooth profile — через ratio × major_d
+
+**Non-goals:** изменение threading/transaction/sandbox; capability scope; worker/agent — только правка `DEFAULT_SYSTEM_PROMPT`.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-026A  / Developer / Canonical Block 2 ставит helix на tip (shank_h - thread_h)     / planned
+2. NC-DEV-CORE-026B  / Developer / ISO 261 coarse-pitch lookup table вместо хардкода pitch       / planned
+3. NC-DEV-CORE-026C  / Developer / Thread_h без произвольного cap, через shank_h и pitch         / planned
+4. NC-DEV-DOC-010    / Developer / Sprint 5.10 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES   / planned
+5. NC-PM-REVIEW-014  / PM        / DoD + dog-food: резьба на свободном конце шанка              / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-026A** | Developer | 1 | Canonical Block 2 ставит helix на tip шанка | `config/defaults.py` | В Block 2 parameter header — `shank_h = 3.0 * major_d` (должен совпадать с Block 1); `thread_z_start = shank_h - thread_h`; `helix.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, thread_z_start), FreeCAD.Rotation(0, 0, 0))`; профиль triangle смещён с `thread_z_start` в абсолютных координатах; комментарий объясняет layout (head z<0, shank z=[0, shank_h], tip at z=shank_h) | `TASK CODE: NC-DEV-CORE-026A` / Проблема: Фото M24/M30 показывают резьбу у головы, гладкая часть внизу. LLM генерировал helix.Placement по умолчанию (z=0), шанк занимает z=[0, shank_h], и резьба в итоге от z=0 вверх — т.е. у головы. Реальные ISO-болты: резьба от tip'а (свободного конца), гладкое плечо под головой. Решение: (1) в Block 2 header добавить shank_h = 3.0 * major_d (совпадает с Block 1); (2) thread_z_start = shank_h - thread_h; (3) helix.Placement задать в thread_z_start; (4) profile triangle переписать в абсолютные координаты со сдвигом thread_z_start; (5) комментарий объясняет layout. |
+| **NC-DEV-CORE-026B** | Developer | 1 | ISO 261 coarse-pitch lookup table | `config/defaults.py` | Parameter header в Block 1 и Block 2 содержит `_ISO_COARSE_PITCH = {3: 0.5, 4: 0.7, ..., 48: 5.0}`; `pitch = _ISO_COARSE_PITCH[int(major_d)]` заменяет хардкод `pitch = 3.0`; комментарий «the ONLY hand-set value» явно маркирует major_d как единственную точку ввода | `TASK CODE: NC-DEV-CORE-026B` / Вместо `pitch = 3.0 # для M24` ввести lookup table для всех ISO 261 coarse series (M3–M48), pitch выводится из major_d. Это делает recipe действительно параметрическим: пользовательское «M30» в промпте → LLM подставляет только major_d=30.0, pitch=3.5 берётся автоматически. |
+| **NC-DEV-CORE-026C** | Developer | 2 | Thread_h без произвольного cap | `config/defaults.py` | `thread_h = min(shank_h - major_d, 10 * pitch)` — без литерала 30.0 или иного абсолютного cap'а; комментарий указывает: full shank minus ~1×d shoulder под головой, capped at 10 turns для OCCT reliability | `TASK CODE: NC-DEV-CORE-026C` / Заменить `thread_h = min(30.0, 10 * pitch)` на формулу `min(shank_h - major_d, 10 * pitch)`. Произвольный 30-mm cap удалить — он применим только для средних M-размеров, для M8 слишком много, для M48 слишком мало. Thread length = full shank минус плечо ~1×d под головой, capped at 10 turns. |
+| **NC-DEV-DOC-010** | Developer | 3 | Sprint 5.10 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.10 в каноническом формате; README up to 5.10; RELEASE_NOTES содержит v1.3 с описанием thread-position-bug и его фикса | `TASK CODE: NC-DEV-DOC-010` / По шаблону 5.9. Версия 1.2 → 1.3. |
+| **NC-PM-REVIEW-014** | PM | 4 | DoD + dog-food | Закрытый checklist | (1) parameter header включает _ISO_COARSE_PITCH и в Block 1, и в Block 2 (2) major_d помечено "the ONLY hand-set value" (3) thread_z_start = shank_h - thread_h присутствует в Block 2 (4) helix.Placement задан в thread_z_start (5) profile triangle в абсолютных координатах (6) нет хардкод 30.0 в thread_h (7) pytest 229+ clean (8) dog-food визуально: резьба НА СВОБОДНОМ КОНЦЕ шанка, гладкое плечо под головой | — |
+
+**Правила останова Sprint 5.10:** изменение threading / transaction / sandbox → rejected / возврат хардкода `pitch = 3.0` без деривации из major_d → rejected / thread_h cap с литералом 30.0 → rejected / перестановка головы на положительный Z без соответствующего фикса helix.Placement → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.11 — Thread Cut Actually Happens: makePipeShell + Volume Assertion
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.10 закрыт — резьба теперь на свободном конце шанка, `pitch` деривативен. Новый dog-food под 5.10: резьба выглядит как "пояски на поверхности шанка", а не реальные V-гроувы. Пользовательский вердикт: «выглядит как будто резьба есть, но она не вырезана из болта». Close-up фото подтверждает: диаметр шанка в резьбовой зоне не уменьшается, гроувы не углублены.
+
+## Цель
+
+Устранить silent-fail `Part::Sweep` doc-object'а на треугольном профиле резьбы. Подтверждённый диагноз из dog-food (Sprint 5.10 logs `11:27`):
+
+- LLM генерировал canonical Block 2 как положено: Helix + ThreadProf (Face) + Part::Sweep (Solid=True, Frenet=True) + Part::Cut.
+- Но `Part::Sweep` при такой конфигурации нередко возвращает **degenerate/self-intersecting shell** без валидного объёма.
+- Последующий `Part::Cut` на пустом объёме возвращает Base без изменений → шанк выглядит с «поясками» (это edges сохранённого sweep-shell), но диаметр не меняется.
+
+Две правки canonical Block 2:
+
+1. **Wire-level sweep через `helix_wire.makePipeShell([profile_wire], True, True)`.** `Part.makeHelix(pitch, height, radius)` возвращает Wire напрямую; `Part.makePolygon([...])` возвращает closed Wire (не Face); `makePipeShell` — прямой OCCT-вызов, который Part::Sweep оборачивает но иногда портит. FreeCAD-документация явно указывает `makePipeShell` как «simpler and faster than Part::Sweep» (раздел `/PART III — Advanced`).
+2. **Sanity assertion перед Cut.** `assert thread_shape.isValid()` и `assert thread_shape.Volume > 0` — если sweep вырождается, ошибка будет видна немедленно, а не проявится как невидимая резьба после «успешного» Cut. Это поднимает категорию ошибки на `validation` с thread-specific feedback (см. Sprint 5.8).
+
+**Non-goals:** изменение threading model / executor / agent / sandbox / capability scope — только правка `DEFAULT_SYSTEM_PROMPT` Block 2.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-027A  / Developer / Canonical Block 2: helix_wire.makePipeShell вместо Part::Sweep       / planned
+2. NC-DEV-CORE-027B  / Developer / Assertion thread_shape.isValid() + Volume > 0 перед Cut             / planned
+3. NC-DEV-DOC-011    / Developer / Sprint 5.11 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES         / planned
+4. NC-PM-REVIEW-015  / PM        / DoD + dog-food: фактический cut (диаметр шанка уменьшается в гроувах) / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-027A** | Developer | 1 | Canonical Block 2: wire-level sweep вместо Part::Sweep | `config/defaults.py` | Block 2 использует `Part.makeHelix(pitch, thread_h, shank_r)` (возвращает Wire) + `Part.makePolygon([...])` (Wire, не Face) + `helix_wire.makePipeShell([profile_wire], True, True)`; результат обёрнут в `Part::Feature "Thread"`; `Part::Cut` принимает `thread` как Tool; комментарий объясняет почему НЕ Part::Sweep | `TASK CODE: NC-DEV-CORE-027A` / Проблема: dog-food 2026-04-18 визуально показал резьбу как «пояски», т.е. Part::Sweep silent-fail'ит на треугольном профиле, Part::Cut на degenerate shell возвращает Base. Решение: (1) заменить `Part::Helix` doc object на `helix_wire = Part.makeHelix(pitch, thread_h, shank_r)` — Wire, не doc object; (2) `helix_wire.Placement` задаётся на Wire, не на doc; (3) profile — `Part.makePolygon([...])` возвращает closed Wire (не Face, т.к. makePipeShell ожидает Wire); (4) anchor point берётся из `helix_wire.Vertexes[0].Point`; (5) `thread_shape = helix_wire.makePipeShell([profile_wire], True, True)` — args makeSolid=True, isFrenet=True; (6) результат обёрнут в Part::Feature "Thread" (не Part::Sweep); (7) Part::Cut принимает thread как Tool. Комментарий объясняет rationale: Part::Sweep doc object frequently produces degenerate solid, makePipeShell — direct OCCT call, более надёжен. |
+| **NC-DEV-CORE-027B** | Developer | 1 | Assertion `thread_shape.isValid()` + `Volume > 0` | `config/defaults.py` | Canonical Block 2 содержит `assert thread_shape.isValid(), "thread sweep produced an invalid shape"` и `assert thread_shape.Volume > 0, "thread sweep produced zero volume"` ДО создания Part::Feature; comment объясняет что assertion обеспечивает fail-fast вместо silent-fail | `TASK CODE: NC-DEV-CORE-027B` / Проблема: если thread_shape всё же degenerate (edge case), Part::Cut молча возвращает Base и пользователь видит «поверхностные пояски». Решение: после `helix_wire.makePipeShell(...)` добавить два assert: isValid() и Volume > 0. При срабатывании — AssertionError распространится в executor, будет пойман как runtime error, LLM получит thread-specific feedback (Sprint 5.8) и перегенерирует. Это намного лучше чем silent success. |
+| **NC-DEV-DOC-011** | Developer | 2 | Sprint 5.11 в doc/SPRINT_PLANS.md + README + RELEASE_NOTES | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.11 в каноническом формате; версия v1.3 → v1.4 | `TASK CODE: NC-DEV-DOC-011` / По шаблону 5.10. |
+| **NC-PM-REVIEW-015** | PM | 3 | DoD + dog-food | Закрытый checklist | (1) Block 2 использует makeHelix и makePipeShell, не Part::Helix + Part::Sweep (2) assertion isValid + Volume > 0 присутствует (3) profile — Wire (makePolygon), не Face (4) pytest clean 229+ (5) dog-food визуально: в резьбовой зоне диаметр шанка УМЕНЬШАЕТСЯ (реальные V-гроувы), а не «пояски» | — |
+
+**Правила останова Sprint 5.11:** изменение threading / transaction / sandbox → rejected / возврат Part::Sweep doc object в canonical Block 2 → rejected (документация показывает что он ненадёжен для thread профилей) / убрать assertion «чтобы не ломалось» → rejected (это главная защита от silent-fail) / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.12 — Truly Parametric Template: Placeholder Syntax + Parse Instructions + ISO 4014/4017
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.11 закрыт — резьба теперь реально вырезается (`makePipeShell` + volume assertion). Новый раунд dog-food. Пользователь: «Это выглядит как хардкод (… `major_d = 24.0` …) — дефолт должен быть универсальным, давать инструкции LLM для правильного определения параметров. Не упрощай себе работу, задолбал». Фото показывает болт M24 с шайбой — визуально корректно, но в промпте literal `24.0` заставляет LLM копировать его дословно при любом размере резьбы.
+
+## Цель
+
+Превратить canonical bolt+washer recipe из **конкретного M24-примера** в **настоящий параметрический шаблон**. Два механизма:
+
+1. **Placeholder-синтаксис `<MAJOR_D_FROM_REQUEST>`** — синтаксически невалидный Python, LLM не может оставить его в выводе дословно. В отличие от комментариев `# ← the ONLY hand-set value`, которые LLM игнорирует, placeholder **физически не парсится** и принуждает LLM к substitute.
+2. **Явный "Parsing rules" preamble** — таблица `user text → extract`, описывающая как из разных форм запроса («болт M24», «M24x80», «M30 ISO», «болт полностью резьбовой») извлечь `major_d`, `shank_h`, `standard`. Плюс ISO 4014/4017 thread-length table (b = 2d+6 / 2d+12 / 2d+25 по бендам `shank_h ≤ 125 / 200 / >200`).
+
+Блоки 1/2/3 теперь начинаются одинаково:
+```
+major_d = <MAJOR_D_FROM_REQUEST>     # MUST equal the value used in Block 1
+shank_h = <SHANK_H_FROM_REQUEST>     # MUST equal the value used in Block 1
+standard = <ISO_STANDARD_FROM_REQUEST>   # "ISO4014" (default) or "ISO4017"
+```
+
+LLM вынужден подставить `24.0` / `80.0` / `"ISO4014"` — оставить `<...>` = SyntaxError на execute.
+
+Также добавлены:
+- **Conditional for thread_h** — ветка ISO4014/ISO4017 через `if standard == "ISO4017"`, с реальной длиной резьбы по ISO table.
+- **Conditional for Block 3** — «Emit Block 3 ONLY if the user requested a washer / шайба / flange. Otherwise skip entirely». Раньше шайба генерилась всегда.
+
+**Non-goals:** изменение threading / transaction / sandbox / executor / agent / worker. Только правка `DEFAULT_SYSTEM_PROMPT`.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-028A  / Developer / Placeholder syntax <...> в canonical Block 1/2/3 vs M24-literals   / planned
+2. NC-DEV-CORE-028B  / Developer / ISO 4014 / ISO 4017 thread-length table + derivation в Block 2     / planned
+3. NC-DEV-CORE-028C  / Developer / Parse instructions preamble: таблица user text → extract           / planned
+4. NC-DEV-CORE-028D  / Developer / Conditional Block 3 (washer only if user asked)                   / planned
+5. NC-DEV-DOC-012    / Developer / Sprint 5.12 + RELEASE_NOTES v1.5                                   / planned
+6. NC-PM-REVIEW-016  / PM        / DoD + dog-food: «болт M48 без шайбы» / «болт M8 полностью резьбовой» / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-028A** | Developer | 1 | Placeholder syntax в canonical Block 1/2/3 | `config/defaults.py` | В Block 1: `major_d = <MAJOR_D_FROM_REQUEST>`, `shank_h = <SHANK_H_FROM_REQUEST>`. В Block 2: те же + `standard = <ISO_STANDARD_FROM_REQUEST>`. В Block 3: `major_d = <MAJOR_D_FROM_REQUEST>`. Комментарий сразу после каждого placeholder показывает пример substitution («example: 24.0 for "M24"»). Нет literal 24.0 в placeholder-lines | `TASK CODE: NC-DEV-CORE-028A` / Проблема: `major_d = 24.0` комментируется как «ONLY hand-set value», LLM pattern-matches и копирует 24.0. Решение: заменить literal на `<MAJOR_D_FROM_REQUEST>` — syntactically invalid → LLM не может оставить. Комментарий `# example: 24.0 for "M24" / 30.0 for "M30"` показывает substitution паттерн без priming на конкретное значение. То же для `shank_h`, и для Block 2 — плюс `standard` для ISO 4014 vs ISO 4017. |
+| **NC-DEV-CORE-028B** | Developer | 1 | ISO 4014 / 4017 thread-length table | `config/defaults.py` | Block 2 содержит conditional: `if standard == "ISO4017": _b_nominal = shank_h - 0.5 * major_d; else: _b_nominal = (2*d+6 if shank_h ≤ 125 else 2*d+12 if ≤ 200 else 2*d+25)`. Reliability cap: `thread_h = min(_b_nominal, 10*pitch, shank_h - 0.5*major_d)`. Убран произвольный cap `min(shank_h - major_d, 10 * pitch)` из Sprint 5.10 | `TASK CODE: NC-DEV-CORE-028B` / Sprint 5.10 ввёл `thread_h = min(shank_h - major_d, 10 * pitch)` — это произвольная формула, не ISO. Решение: использовать реальную ISO 4014 табличную формулу с тремя бендами по shank_h (≤125 / ≤200 / >200). Для ISO 4017 fully threaded — shank_h минус плечо 0.5*d. Reliability cap ≤10 turns по-прежнему применяется как min(). |
+| **NC-DEV-CORE-028C** | Developer | 2 | Parse instructions preamble | `config/defaults.py` | Перед Block 1 — раздел «How to parse the user's request» с markdown-таблицей: `user text → extract`. 6 строк минимум: M<N>, M<N>x<L>, no length, fully threaded, ISO 4017, fine pitch. Плюс ISO 261 coarse-pitch dict (verbatim). Плюс ISO 4014 thread-length формула | `TASK CODE: NC-DEV-CORE-028C` / Перед canonical layout добавить раздел «#### How to parse the user's request — MANDATORY before emitting code». Markdown-таблица с 6+ правилами, blockquote с ISO_COARSE_PITCH, blockquote с b-формулой. Подчеркнуть: «Do NOT leave <PLACEHOLDER> tokens in the code you emit — they will not parse». |
+| **NC-DEV-CORE-028D** | Developer | 2 | Conditional Block 3 | `config/defaults.py` | Заголовок Block 3 дополнен: «Emit Block 3 ONLY if the user requested a washer / шайба / flange. Otherwise skip this block entirely». LLM не пишет Block 3 если в запросе нет упоминания шайбы | `TASK CODE: NC-DEV-CORE-028D` / Раньше canonical example показывал все 3 блока как обязательные. Болт без шайбы получал лишний Washer. Решение: в начале Block 3 markdown-секции явно сказать «Emit ONLY if user asked for washer». |
+| **NC-DEV-DOC-012** | Developer | 3 | Sprint 5.12 + RELEASE_NOTES v1.5 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.12 в каноническом формате; README to 5.12; RELEASE_NOTES содержит v1.5 с объяснением placeholder mechanism | `TASK CODE: NC-DEV-DOC-012` / По шаблону 5.11. Версия 1.4 → 1.5. |
+| **NC-PM-REVIEW-016** | PM | 4 | DoD + dog-food | Закрытый checklist | (1) ни одного `= 24.0` в canonical blocks (2) placeholder syntax присутствует в Block 1/2/3 (3) ISO 4014/4017 thread-length conditional (4) ISO 261 pitch dict сохранён (5) «Emit ONLY if» для Block 3 (6) pytest 229+ clean (7) dog-food: «болт M48 без шайбы» → Block 3 пропущен (8) dog-food: «болт M8 полностью резьбовой» → standard=ISO4017, thread_h ≈ shank_h - 0.5*d | — |
+
+**Правила останова Sprint 5.12:** изменение threading / transaction / sandbox → rejected / возврат literal `24.0` в placeholder-позиции → rejected / убрать ISO 4014 thread-length table ради «упрощения» → rejected / оставить Block 3 обязательным (шайба всегда) → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.13 — Naming Contract + defaults.py Bug Fixes (external audit)
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Sprint 5.12 закрыт. Внешний аудит (patches + AUDIT_REPORT от co-author) выявил **дominантную причину 14+ провалов в dog-food 2026-04-18** — cross-block naming drift: LLM в Block 1 пишет `major_d`, а в Block 2 — уже `major_diameter` → `NameError` → `max_retries_exhausted`. Также 7 накопленных мелких багов в `defaults.py`, включая сломанные docstrings вида `""..""` (SyntaxError при копировании LLM).
+
+## Цель
+
+Три одновременных удара по главной проблеме:
+
+1. **Canonical naming table в промпте** (FIX 8) — три таблицы (bolt / gear / wheel) с каноническими именами и «NEVER use» колонкой. LLM получает жёсткий контракт имён, а не «пример, от которого можно отклоняться».
+2. **Block-aware `_make_feedback`** (PATCH 1) — сигнатура расширена `block_idx`/`total_blocks`. В Block ≥ 2 при NameError выдаётся thread-specific диагноз: «CRITICAL: fresh namespace, must re-declare with IDENTICAL names». Перечисляет конкретные drift-паттерны: `major_d vs major_diameter / diameter / d`, `shank_h vs shank_length / length / L`, etc.
+3. **Observability** (OBS) — `failed_block_idx` в `audit_log("agent_attempt", ...)` при failure. Будущий dog-food анализ сможет grep'ать «сколько % NameError в Block ≥ 2» без парсинга сообщений.
+
+Плюс 7 fix'ов из аудита:
+- **FIX 1** (critical): `""Vertical through-hole..""` docstrings в 3 helper-функциях (строки 770–784) → SyntaxError при копировании LLM. Заменены на `#` комментарии.
+- **FIX 2**: `Part.RegularPolygon(center, radius, 6)` — hallucinated API, его нет. Заменено на `6 Part.LineSegment + Equal-length + Symmetric constraints`.
+- **FIX 3**: `PartDesign::Draft` example с закомментированными Base/Angle/NeutralPlane → создаёт broken feature при recompute. Весь блок завёрнут в comment-template.
+- **FIX 4**: `helix.LocalCoord # 0 = right-hand, 1 = left-hand` — неверный коммент; LocalCoord это coordinate-system mode. Для left-hand — отрицательный `Pitch`.
+- **FIX 5**: `Draft.move(obj, ...)` с необъявленным `obj` → NameError при LLM-копировании. Завёрнуто в comment-template.
+- **FIX 6**: `import copy; shapes=[]; s = original_shape.copy()` — `import copy` здесь лишний, `.copy()` это Shape метод.
+- **FIX 7**: `REFUSAL_KEYWORDS = [file, import, url, http, https]` — слишком широкий, ни разу не сработал за 586 событий, при этом блокировал легитимные запросы типа «импорт STEP». Сужён до `[download, fetch url, wget, curl]`.
+- **FIX 9**: добавлен anti-pattern для `Part.makeInvoluteGear` (deprecated в FreeCAD 1.x) в секцию `## Blocked`.
+
+**Non-goals:** изменение threading / transaction / sandbox / capability scope / executor / worker. Правки в `config/defaults.py` (промпт) и `core/agent.py` (feedback signature + audit field).
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-029A  / Developer / FIX 1 — broken docstrings → comments (critical)              / planned
+2. NC-DEV-CORE-029B  / Developer / FIX 8 — Canonical naming tables (bolt/gear/wheel)           / planned
+3. NC-DEV-CORE-029C  / Developer / PATCH 1 — _make_feedback block-aware NameError              / planned
+4. NC-DEV-CORE-029D  / Developer / OBS — failed_block_idx в audit_log                          / planned
+5. NC-DEV-CORE-029E  / Developer / FIX 2–7, 9 — defaults.py cleanup из аудита                 / planned
+6. NC-DEV-CORE-029F  / Developer / Tests: regression + test_make_feedback_nameerror_block_scoping / planned
+7. NC-DEV-DOC-013    / Developer / Sprint 5.13 + RELEASE_NOTES v1.6                            / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-029A** | Developer | 1 | FIX 1 — broken `""..""` docstrings → `#` comments | `config/defaults.py` | В helper-функциях `add_hole`, `add_horizontal_hole`, `add_countersunk_hole` (строки 770–784) все `""..""` заменены на `# ..` однострочные комментарии; grep `^    ""` возвращает 0 match'ей | `TASK CODE: NC-DEV-CORE-029A` / Проблема: внутри module-level `DEFAULT_SYSTEM_PROMPT = """..."""` нельзя использовать `"""..."""` для docstring'ов — приходится либо экранировать, либо заменить на `#`. Текущий `""..""` = invalid SyntaxError при exec. Решение: заменить все 3 вхождения на `# ..`. |
+| **NC-DEV-CORE-029B** | Developer | 1 | FIX 8 — Canonical naming tables | `config/defaults.py` | После "CRITICAL: every block is a FRESH Python namespace" и ДО "Parameter header" — раздел "### Canonical variable names — MANDATORY contract across all blocks" с 3 таблицами (bolt, gear, wheel); каждая имеет колонки Canonical / Meaning / NEVER use; заключительная строка: "Naming drift between blocks is the #1 cause of regeneration cycles" | `TASK CODE: NC-DEV-CORE-029B` / 14+ провалов в dog-food из-за naming drift (major_d → major_diameter etc.). Решение: жёсткий контракт имён в виде markdown-таблиц. Каждая таблица с колонкой NEVER use перечисляет типовые variants, которые LLM склонен использовать. Три scope'а: bolt/thread, gear, wheel. |
+| **NC-DEV-CORE-029C** | Developer | 1 | PATCH 1 — _make_feedback block-aware NameError | `core/agent.py`, `tests/test_agent.py` | `_make_feedback(error, category, block_idx=1, total_blocks=1)` — два новых kwarg'а с дефолтом 1 (backward-compatible); NameError ветка: если `total_blocks > 1 and block_idx > 1` — специализированное сообщение про fresh namespace + конкретный список drift-patterns; call-site в `agent.run` передаёт `block_idx=idx, total_blocks=len(blocks)`; regression-тест `test_make_feedback_nameerror_block_scoping_diagnosis` | `TASK CODE: NC-DEV-CORE-029C` / Текущая NameError ветка говорит «Variable from previous request» или «defined inside if block» — ни то ни другое не соответствует cross-block drift. Решение: расширить сигнатуру, в multi-block fail'е выдавать thread-specific диагноз. |
+| **NC-DEV-CORE-029D** | Developer | 1 | OBS — failed_block_idx в audit_log | `core/agent.py` | В agent.run в failure-audit-блоке добавлено поле `"failed_block_idx": failed_block_idx`; переменная `failed_block_idx` инициализируется `None` в начале цикла попыток и устанавливается в `idx` при block failure | `TASK CODE: NC-DEV-CORE-029D` / Для будущего анализа: grep `failed_block_idx >= 2` → процент NameError из-за drift без парсинга сообщений. |
+| **NC-DEV-CORE-029E** | Developer | 2 | FIX 2, 3, 4, 5, 6, 7, 9 | `config/defaults.py`, `tests/test_agent.py` | FIX 2: `Part.RegularPolygon` убран, заменён на LineSegment+constraints. FIX 3: PartDesign::Draft example в comment-template. FIX 4: helix.LocalCoord коммент исправлен (coord system, not handedness). FIX 5: Draft.move в comment-template. FIX 6: import copy убран. FIX 7: REFUSAL_KEYWORDS сужен до `[download, fetch url, wget, curl]`; тесты `test_contains_refusal_intent` и `test_run_early_refusal` обновлены. FIX 9: makeInvoluteGear anti-pattern в секции Blocked | `TASK CODE: NC-DEV-CORE-029E` / По patch_02_defaults_fixes.py. |
+| **NC-DEV-CORE-029F** | Developer | 3 | Regression + новый тест | `tests/test_agent.py` | 230+ tests clean; `test_make_feedback_nameerror_block_scoping_diagnosis` проверяет Block 2/3 специализацию и fallback для single-block | — |
+| **NC-DEV-DOC-013** | Developer | 4 | Sprint 5.13 + RELEASE_NOTES v1.6 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.13 в каноническом формате; версия v1.5 → v1.6 | — |
+
+**Правила останова Sprint 5.13:** изменение threading / transaction / sandbox → rejected / возврат `""..""` docstrings → rejected / возврат широкого REFUSAL_KEYWORDS без dog-food evidence → rejected / убрать Canonical naming table как «избыточное» → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+## Сводная таблица: что изменилось от v0.1 → v1.6
 
 | Компонент | v0.1 (оригинал) | v0.8 (финал) |
 |---|---|---|
@@ -590,3 +977,35 @@ Sprint 3 принимается как завершённый этап **с по
 | Тригонометрия | `App.cos()` → runtime error → 3 ретрая | `math.cos()` без import → работает; `_categorize_error` ловит attribute errors → fast-fail (Sprint 5.5) |
 | Context объектов | только `volume_mm3` + `placement` | `ObjectInfo.properties` с L/W/H/Radius; `to_prompt_str()` выводит размеры (Sprint 5.5) |
 | Placement conventions | не описаны в prompt | `Box.Placement` = угол, не центр; `Cylinder/Cone` = центр основания; примеры в system prompt (Sprint 5.5) |
+| Stop button retry | `Cancelled` → 3 retries + `max_retries_exhausted` | fast-exit после 1 attempt; audit `cancelled_by_user` (Sprint 5.6) |
+| Handoff timeout | хардкод 15 s + retry того же тяжёлого кода | `exec_handoff_timeout_s` в конфиге (default 60 s); fast-exit + actionable feedback «Split the script» (Sprint 5.6) |
+| IndexError feedback | generic «Execution failed» | конкретный hint про `edge.Vertexes[1]` на круговых рёбрах, `shape.Faces[0]` на wire/compound (Sprint 5.6) |
+| Invalid shape feedback | `Shape is invalid` смешан с `Shape is null` | отдельная ветка с `shape.fix()` / `removeSplitter()` / `isValid()` (Sprint 5.6) |
+| Prompt recipe корректность | `Part::LinearPattern` рекомендовался как «always reliable» + параллельно помечен как «не существует» | Python loop + `Part.makeCompound` в единственном recipe; static verifier защищает от регрессий (Sprint 5.7) |
+| Output format | жёсткое «no markdown fences» → LLM пишет 9000-символьный монолит | simple → unfenced, complex → 2–3 fenced ```python``` блока (Sprint 5.7) |
+| Multi-block protocol | отсутствует в промпте, хотя executor это поддерживал с 5.4 | явный canonical layout bolt+thread+washer в три блока, правила для `doc.getObject()` между блоками (Sprint 5.7) |
+| Static recipe verifier | нет — ошибки в промпте ловятся только dog-food-сессией | `tests/test_prompt_recipe.py` проверяет, что каждый тип в `doc.addObject(...)` whitelisted (Sprint 5.7) |
+| Multi-block scoping | «variables do NOT persist» одной строкой; LLM игнорировал | явный CRITICAL-блок + Parameter header в каждом блоке + параметрический canonical bolt (major_d/pitch/minor_d, ISO 261 pitch table) (Sprint 5.8) |
+| Bolt recipe | хардкод M24-specific: `shank_r = 12.0; Height = 15.0; ...` | полностью параметризован: `shank_r = major_d/2; head_h = 0.6*major_d; head_key = 1.5*major_d; minor_d = major_d - 1.226*pitch; thread_h = min(30, 10*pitch)` — работает для M8…M48 (Sprint 5.8) |
+| Gear recipe | `PartDesign::InvoluteGear` — не существует в stock FreeCAD 1.1 | Part WB approximation: Part::Revolution disc + Part::Box tooth + Python loop + makeCompound + Part::MultiFuse; feedback направляет LLM на этот паттерн (Sprint 5.8) |
+| Touched/Invalid feedback | одна ветка «убери Fillet», даже когда fillet не задействован | thread-specific чеклист (sweep.Shape.isValid(), helix fits shank, ≤10 turns, Frenet=True, Cut direct) + fallback на fillet-ветку для не-thread объектов (Sprint 5.8) |
+| Canonical bolt reality | голый prism+cylinder fuse, LLM копировал буквально → результат выглядел «сильно упрощённым» без фасок | Block 1 содержит `Part::Chamfer` на hex head (все рёбра, 0.08×major_d) + shank (только круговые рёбра, 0.04×major_d = thread-entry chamfer) (Sprint 5.9) |
+| Fillet/Chamfer framing | WARNING «DO NOT apply fillets to final body» → LLM обобщал до «никогда не fillet'ить» | Раздел «Realism — chamfers are the default» + переформулировка warning в ENCOURAGED с конкретными depth-формулами для head/shank/washer/gear (Sprint 5.9) |
+| Thread position | helix.Placement по умолчанию (z=0) → резьба у головы, гладко на свободном конце | `thread_z_start = shank_h - thread_h`, `helix.Placement` явно в tip'овой позиции, profile triangle в абсолютных координатах (Sprint 5.10) |
+| Pitch | захардкожено `pitch = 3.0` для M24 | `_ISO_COARSE_PITCH = {3: 0.5, ..., 48: 5.0}` — pitch выводится из major_d автоматически (Sprint 5.10) |
+| Thread_h cap | литерал 30.0 — произвольное ограничение | `min(shank_h - major_d, 10 * pitch)` — full shank минус плечо под головой, capped by reliability limit (Sprint 5.10) |
+| major_d семантика | параметр с M24-specific комментом | единственная hand-set константа, явно помеченная «from user request `M<N>` → N» (Sprint 5.10) |
+| Thread sweep reliability | Part::Sweep doc object silent-fail на треугольном профиле → Cut на degenerate shell → резьба видна как «пояски» без гроувов | wire-level `helix_wire.makePipeShell([profile_wire], True, True)` + assertion `isValid()` и `Volume > 0` перед Cut (Sprint 5.11) |
+| Thread profile type | `Part.Face(Part.makePolygon(...))` для Part::Sweep Sections | `Part.makePolygon(...)` closed Wire для makePipeShell (не Face) (Sprint 5.11) |
+| major_d как example-literal | `major_d = 24.0` с комментарием "the ONLY hand-set value" → LLM копирует 24.0 дословно | `major_d = <MAJOR_D_FROM_REQUEST>` placeholder syntax (syntactically invalid → LLM вынужден substitute) (Sprint 5.12) |
+| Parse instructions | неявные / комментарии | явный раздел «How to parse the user's request» с markdown-таблицей user text → extract (Sprint 5.12) |
+| Thread length derivation | `thread_h = min(shank_h - major_d, 10 * pitch)` (произвольная формула) | ISO 4014 table: `2d+6 / 2d+12 / 2d+25` по бендам shank_h; ISO 4017 ветка для fully threaded (Sprint 5.12) |
+| Block 3 (washer) | всегда эмитится | conditional: «Emit ONLY if user requested a washer / шайба» (Sprint 5.12) |
+| Cross-block naming drift | нет явного контракта → 14+ NameError/день в Block ≥ 2 | Canonical naming table (bolt/gear/wheel) с колонкой «NEVER use»; block-aware `_make_feedback` специализированный диагноз при NameError в Block ≥ 2 (Sprint 5.13) |
+| Broken docstrings в helpers | `""Vertical through-hole..""` → SyntaxError при LLM-копировании | заменены на `# ..` comments (Sprint 5.13) |
+| `Part.RegularPolygon` в Sketcher рекомендациях | hallucinated API, не существует | заменено на `LineSegment + Equal-length + Symmetric constraints` (Sprint 5.13) |
+| `PartDesign::Draft` incomplete example | `addObject("PartDesign::Draft")` без Base/Angle/NeutralPlane → broken feature | весь блок в comment-template (Sprint 5.13) |
+| `helix.LocalCoord` коммент | "0=right-hand, 1=left-hand" — неверно | coordinate-system mode; для left-hand — отрицательный Pitch (Sprint 5.13) |
+| `Draft.move(obj, ...)` с undefined `obj` | копируется LLM → NameError | comment-template с `some_obj` placeholder (Sprint 5.13) |
+| REFUSAL_KEYWORDS over-broad | `[file, import, url, http, https]` — ни разу не сработал за 586 событий, но мог блокировать легитимные запросы | `[download, fetch url, wget, curl]` — только явные fetch-from-network (Sprint 5.13) |
+| Audit observability | `failed_block_idx` отсутствовал | добавлен в `audit_log("agent_attempt", ...)` при failure (Sprint 5.13) |

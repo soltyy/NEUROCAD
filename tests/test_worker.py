@@ -200,5 +200,46 @@ def test_request_exec_cancelled():
     assert result["error"] == "Cancelled"
 
 
+def test_request_exec_reads_timeout_from_config():
+    """Sprint 5.6: _request_exec reads exec_handoff_timeout_s from load_config()."""
+    worker = LLMWorker(
+        on_chunk=MagicMock(),
+        on_attempt=MagicMock(),
+        on_status=MagicMock(),
+        on_exec_needed=MagicMock(),
+        on_done=MagicMock(),
+        on_error=MagicMock(),
+    )
+    # load_config returns a custom timeout; _exec_event.wait is inspected below.
+    with patch("neurocad.core.worker.load_config", return_value={"exec_handoff_timeout_s": 0.25}), \
+         patch.object(worker, "_schedule_main"), \
+         patch.object(worker._exec_event, "wait", return_value=True) as mock_wait:
+        worker._exec_result = {"ok": True}
+        worker._request_exec("code", 1)
+        # wait was called with the configured timeout, not the old hardcoded 15.0
+        assert mock_wait.called
+        _, kwargs = mock_wait.call_args
+        assert kwargs.get("timeout") == 0.25
+
+
+def test_request_exec_config_failure_falls_back_to_default():
+    """Sprint 5.6: if load_config() raises, _request_exec falls back to 60.0s."""
+    worker = LLMWorker(
+        on_chunk=MagicMock(),
+        on_attempt=MagicMock(),
+        on_status=MagicMock(),
+        on_exec_needed=MagicMock(),
+        on_done=MagicMock(),
+        on_error=MagicMock(),
+    )
+    with patch("neurocad.core.worker.load_config", side_effect=RuntimeError("boom")), \
+         patch.object(worker, "_schedule_main"), \
+         patch.object(worker._exec_event, "wait", return_value=True) as mock_wait:
+        worker._exec_result = {"ok": True}
+        worker._request_exec("code", 1)
+        _, kwargs = mock_wait.call_args
+        assert kwargs.get("timeout") == 60.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
