@@ -17,7 +17,7 @@ class OpenAIAdapter(LLMAdapter):
         api_key: str,
         model: str = "gpt-4o-mini",
         base_url: str = "https://api.openai.com/v1",
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         temperature: float = 0.0,
         timeout: float = 120.0,
     ):

@@ -1,3 +1,147 @@
+# Release Notes – Sprint 5.19 (Autoscroll Anchor Fix)
+
+**Date:** 2026‑04‑18
+**Based on:** User screenshot after several requests — chat panel showed a blank viewport with the scrollbar pinned at the bottom. Content was present but above the visible area because `scrollbar.setValue(scrollbar.maximum())` ran inside a `QTimer.singleShot(0, …)` and read `maximum()` BEFORE Qt's async layout finished, so the scroll position got frozen on a stale "bottom". Each additional bubble compounded the drift.
+
+## Fix
+Standard Qt "stick-to-bottom" idiom: connect `verticalScrollBar().rangeChanged` — the signal fires AFTER layout has updated the range, so `max_val` in the callback is the real post-layout bottom. Added `valueChanged` handler to detect manual scroll-up (distance from bottom > 20 px) so we don't fight the user when they're reading history.
+
+## Manual verification
+Submit 5+ consecutive requests; after the last one the chat should show the newest bubble fully visible. Scroll up manually to read history — autoscroll stops. Scroll back within 20 px of the bottom — autoscroll resumes.
+
+---
+
+# Release Notes – Sprint 5.20 (3D Text Recipe + NameError "Forgot to Fetch" + ViewObject Attribute Feedback)
+
+**Date:** 2026‑04‑18
+**Based on:** Dog-food request «по орбите сферы запусти слова АТЛАС КОНСАЛТИНГ, по кругу сколько влезет» — 3 attempts, all failed with different root causes:
+  - `Quantity::operator +` on `sphere.Radius + 5.0` plus a hard-coded Linux font path `/usr/share/fonts/truetype/freefont/FreeSans.ttf` that doesn't exist on macOS;
+  - `name 'прозрачная_сфера' is not defined` — LLM forgot to fetch the object with `doc.getObject(...)`, and the single-block NameError feedback's generic "if-block / previous request / typo" message didn't point at the real fix;
+  - `'PartGui.ViewProviderPartExt' object has no attribute 'FontSize'` — LLM tried to render letters by setting `Part::Box.ViewObject.FontSize = 14`.
+
+There was no canonical 3D-text recipe in the prompt, so the LLM reinvented three dead-end approaches in three attempts.
+
+## PR Summary
+Four narrow changes:
+
+1. **`neurocad/core/executor.py`**: `_build_namespace` now injects two sandboxed helpers — `platform_name: str` (e.g. `"darwin"` / `"linux"` / `"win32"`) and `file_exists(path: str) -> bool`. The sandbox still blocks `import os` / `import sys` via the tokenizer; this minimal surface is enough for font-path resolution without opening the whole stdlib.
+
+2. **`neurocad/config/defaults.py`** — new `## PART VII — 3D text` section:
+   - Explicit anti-patterns the LLM is known to attempt (App::Annotation.TextSize, `ViewObject.FontSize` on Part shapes, using `Part::Box.Label` as if it drew the letter).
+   - `neurocad_default_font()` — cross-platform TTF resolver using `platform_name` + `file_exists`. macOS candidates include Arial.ttf and Helvetica.ttc; Linux covers DejaVu and FreeSans paths; Windows hits `C:/Windows/Fonts/`.
+   - Single-letter canonical recipe: `Draft.make_shapestring(String, FontFile, Size)` → `Part::Extrusion`.
+   - `place_word_on_orbit(doc, word, center, orbit_r, …)` helper — writes a word around a horizontal orbit with each glyph tangent to the circle. Uses `obj.Radius.Value + offset` to demonstrate the Quantity-safe arithmetic.
+   - Hard rules at the end: (a) never `obj.Radius + N`, always `.Value + N`; (b) never `ViewObject.FontSize`; (c) never hard-code a font path — use `neurocad_default_font()`; (d) "сколько влезет" = 360° ÷ len(non-space chars).
+
+3. **`neurocad/core/agent.py::_make_feedback`** — NameError branch extended with a "forgot to fetch" heuristic for single-block responses. If the undefined name looks like a document object — capitalized (`BoltBody`), non-ASCII / Cyrillic (`прозрачная_сфера`), or contains an object-ish token from a 30+ item bilingual list (sphere / куб / bolt / шайб / gear / колесо / …) — the feedback now says "this looks like a document object you never fetched into a Python variable; use `varname = doc.getObject('<NameInDocument>')` at the top of your block". Lowercase scoping typos like `pitch` keep the generic scoping/carry-over/typo message.
+
+4. **`neurocad/core/agent.py::_make_feedback`** — new branch for `'…ViewProvider…' object has no attribute '…'`. For text-specific attributes (`FontSize / FontName / TextSize / TextColor / LabelText / Justification`) the feedback redirects to PART VII. For unknown attributes it lists the actual valid Part-ViewObject properties (`ShapeColor`, `Transparency`, `LineWidth`, `Visibility`, `DisplayMode`).
+
+## User-visible changes
+- `по орбите сферы запусти слова "АТЛАС КОНСАЛТИНГ"` should succeed in one attempt now: LLM follows PART VII, uses the font resolver, extrudes each glyph, positions with `place_word_on_orbit`.
+- `name 'сфера' is not defined` → feedback specifically says "you forgot `сфера = doc.getObject(...)`"; the LLM typically fixes it on the first retry instead of guessing for 2-3 attempts.
+- `ViewObject.FontSize` mistakes are funneled back to the correct recipe.
+
+## Migration / rollout notes
+- Additive change to executor namespace (`platform_name`, `file_exists`). No prior code read these names, so there's no collision risk.
+- The canonical recipe uses `import math` at the top of `place_word_on_orbit` — already allowed by the sandbox since Sprint 5.5.
+- No changes to threading / transaction / sandbox-policy / capability scope beyond adding two safe helpers.
+
+## Rollback notes
+Revert `neurocad/core/executor.py`, `neurocad/config/defaults.py`, `neurocad/core/agent.py`, and the 4 added tests in `tests/test_agent.py`.
+
+## Manual verification
+1. `по орбите сферы запусти слова "АТЛАС КОНСАЛТИНГ"` — letters render around the sphere; no `FontSize` / hard-coded-path errors.
+2. `сделай красный куб` then immediately `сделай кубу фаски` (without re-fetching) — feedback points at `doc.getObject(...)` instead of the generic scoping message.
+3. Any prompt that incorrectly tries `obj.ViewObject.FontSize = ...` on a Part shape — feedback redirects to `Draft.make_shapestring + Part::Extrusion`.
+
+---
+
+# Release Notes – Sprint 5.18 (Truncation Detection + max_tokens Bump + Quantity Anti-Pattern + Export Button Removal)
+
+**Date:** 2026‑04‑18
+**Based on:** Kitchen-wall dog-food session — 2 of 2 first attempts failed with `SyntaxError: invalid syntax (line 1)` and `Tokenization error: EOF in multi-line statement` on a 332-char and 3348-char LLM response that were cut mid-statement. Root cause: the model hit its `max_tokens=4096` ceiling; the agent mistook the truncation for a bogus code error and retried the same too-long prompt. Plus third recurrence of `Quantity::operator +/- Unit mismatch`, plus user request to remove the unused Export button.
+
+---
+
+## PR Summary
+Sprint 5.18 is a narrow ~150-line pass:
+
+1. **Truncation detection in `agent.run`.** Before parsing code blocks, check `response.stop_reason`. If it's `"length"` or `"max_tokens"`, add a specific feedback to history (`"Your previous response was TRUNCATED at N chars … split into 2–3 fenced blocks, do NOT re-emit the same long block"`) and retry if attempts remain. Audit event gets `error_category="truncated"` and `error_type="truncated"` on final failure.
+2. **Default `max_tokens` bumped `4096 → 8192`** in both `OpenAIAdapter` and `AnthropicAdapter`. Covers ~95% of dog-food cases including complex assemblies (kitchen, bike frame, bolt+thread+washer).
+3. **Quantity anti-pattern tightened** in `config/defaults.py`: explicit WRONG/RIGHT table, `.Value` marked as the single recommended path, `float(obj.Length)` called out as fragile, `_f(q)` helper for unknown property types, final "best" recommendation to keep original literals in local variables and never read back.
+4. **Export button removed** from the panel. `_export_btn`, its handler `_on_export_requested`, the signal connection, and the `_set_busy` reference all dropped. `core/exporter.py` is left on disk — still available for programmatic export.
+
+## User-visible changes
+- A truncated response now produces a concise "your code was cut off" feedback instead of a confusing SyntaxError fingerpointing at `line 1`.
+- Requests that previously required 2+ retries due to truncation often succeed on the first attempt now (8192 is enough for a full kitchen).
+- The Settings-dialog Quantity hint is more actionable — fewer `.Value` / `float()` retries expected.
+- Panel toolbar shows only `Snapshot` next to the blue send button; `Export` is gone.
+
+## Migration / rollout notes
+- Users who explicitly set `max_tokens` in their `config.json` keep their value — defaults apply only when unset.
+- No breaking changes to the config schema, audit log format, or adapter protocol.
+- Anyone relying on `panel._export_btn` in a downstream customization should switch to calling `core.exporter.export_last_successful` directly.
+
+## Rollback notes
+Revert:
+- `neurocad/ui/panel.py` + `tests/test_panel.py` — restore Export button
+- `neurocad/core/agent.py` + `tests/test_agent.py` — drop truncation branch
+- `neurocad/llm/openai.py` + `neurocad/llm/anthropic.py` — restore `max_tokens=4096`
+- `neurocad/config/defaults.py` — restore old Quantity paragraph
+
+## Manual verification
+1. Submit a large kitchen / bike / multi-bolt request. Watch `llm-audit.jsonl`: `output_tokens` should be < 8192 on success. If it ever hits 8192 and fails: the agent now emits `error_category="truncated"` with a helpful feedback.
+2. Settings dialog: toolbar has only `Snapshot` and `→`. No `Export`.
+3. Arithmetic requests that read `obj.Height.Value` succeed in one attempt; `float(obj.Height)` path should fall back to a Quantity error with Sprint 5.6 feedback (still works as before).
+
+---
+
+# Release Notes – Sprint 5.17 (Concrete Model Registry + Per-Slug API Keys + File-Embed Infra)
+
+**Date:** 2026‑04‑18
+**Based on:** User request — let the user pick a concrete LLM instead of juggling "provider + model-string + base URL" — plus the fact that DeepSeek requires inline file-embedding because it has no separate file-upload endpoint.
+
+---
+
+## PR Summary
+Sprint 5.17 introduces a curated model registry and refactors config / Settings UI / adapter factory around it:
+
+- **`neurocad/llm/models.py`** (new): `ModelSpec` dataclass + the `MODELS` list — 7 curated entries (OpenAI × 2, Anthropic × 2, DeepSeek × 2, Ollama). Each spec carries adapter class, model id, base URL, `key_slug` for credential storage, context-window hint, file-handling strategy (`native` / `inline` / `none`), and for inline models a `file_embed_template`.
+- **`build_file_attachment_prompt(spec, question, file_name, file_content)`** in the same module — for DeepSeek, formats the prompt as `[file name]: … [file content begin] … [file content end] … question` per DeepSeek's official template. For native-upload models it raises ValueError (caller should use the provider's file API). Infra-only — no UI for file attachment yet.
+- **Config schema migration**: `config["model_id"]` replaces `{provider, model, base_url}`. Legacy files are auto-migrated on load via `infer_from_legacy_config` (DeepSeek base_url → `deepseek:chat|reasoner`, Ollama base_url → `ollama:llama3.1`, literal match, provider-level fallback).
+- **Per-slug API keys**: `spec.key_slug` is the storage account. DeepSeek uses the OpenAI adapter class but its API key is stored under `"deepseek"`, not `"openai"` — no more overwriting.
+- **Settings UI**: single "Model" dropdown populated from the registry. An info label below the combo shows "Adapter: openai · Base URL: https://api.deepseek.com/v1 · Context: 64,000 tokens · Files: inline · Key slug: deepseek". The tier radios from Sprint 5.15 (Automatic / Plaintext file / Session only) are preserved; the inline status label now shows the backend holding the key for the selected model's slug.
+- **`_resolve_api_key`** now keyed by `ModelSpec.key_slug`: env-var is `NEUROCAD_API_KEY_{KEY_SLUG.upper()}` — e.g. `NEUROCAD_API_KEY_DEEPSEEK` (separate from `NEUROCAD_API_KEY_OPENAI`).
+- **Hard failure on unknown `model_id`**: typos no longer silently fall back to the default — `ValueError("Unknown model_id …")` with the list of known ids.
+
+## User-visible changes
+- Settings dialog: one dropdown with friendly names ("GPT-4o", "Claude 3.5 Sonnet", "DeepSeek Chat", "DeepSeek Reasoner", "Llama 3.1 (Ollama, local)"). No raw URLs to type.
+- DeepSeek users: the API key is safely stored under its own slug; switching between OpenAI and DeepSeek no longer loses either key.
+- Existing `config.json` with the old three-field schema opens cleanly and is migrated on first save.
+- File-attachment support exists at the API level (`build_file_attachment_prompt`) — UI wiring will follow in a later sprint.
+
+## Migration / rollout notes
+- **Breaking** at the code level: `config["provider"]` is no longer written on save. Any external tooling reading the config file directly should switch to `config["model_id"]`.
+- Env-var names for API keys are now per-slug: `NEUROCAD_API_KEY_DEEPSEEK`, `NEUROCAD_API_KEY_ANTHROPIC`, `NEUROCAD_API_KEY_OPENAI`, `NEUROCAD_API_KEY_OLLAMA`. Existing `NEUROCAD_API_KEY_OPENAI` continues to work for OpenAI models.
+- If a user previously saved a DeepSeek key under the "openai" slug, they will need to re-enter it once. After saving, the key is stored under `"deepseek"` and picked up on every subsequent run.
+
+## Rollback notes
+Revert:
+- `neurocad/llm/models.py` (new file — delete)
+- `neurocad/llm/registry.py` (restore old provider-driven logic)
+- `neurocad/config/config.py` (restore legacy schema defaults)
+- `neurocad/ui/settings.py` (restore 3-field UI)
+- `tests/test_models.py` (new — delete) and the updated `test_adapters.py`, `test_settings.py`, `test_config.py`.
+
+## Manual verification
+1. Open Settings. The old provider/model/base-URL fields are gone; instead there's a single "Model" combo and an info label under it. Pick "DeepSeek Chat", enter your DeepSeek key, click Save. Inline status: "🔑 Key for **deepseek** persisted to **…**".
+2. Switch the combo to "GPT-4o (OpenAI)". The info label updates (Base URL becomes "(provider default)", Key slug becomes "openai"). The stored DeepSeek key is NOT overwritten; the key field is blank; the header shows "No saved key for **openai**".
+3. Submit a request. The adapter is constructed via the ModelSpec; DeepSeek requests go to `https://api.deepseek.com/v1/chat/completions` and use the `"deepseek"` credential.
+4. On the command line: `export NEUROCAD_API_KEY_DEEPSEEK=sk-xxx` sets the DeepSeek key via environment, overriding storage for that session.
+
+---
+
 # Release Notes – Sprint 5.16 (Revolution Profile Diagnostics + No-Code Retry + Bevel Helper)
 
 **Date:** 2026‑04‑18

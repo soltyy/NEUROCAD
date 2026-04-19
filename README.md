@@ -7,7 +7,7 @@ AI‑powered CAD assistant for FreeCAD.
 For installation and development instructions, see [DEV_SETUP.md](DEV_SETUP.md).  
 For architecture and sprint plans, see the `doc/` directory.
 
-Current implementation status (Sprint 5.16, April 2026):
+Current implementation status (Sprint 5.20, April 2026):
 - LLM integration (OpenAI, Anthropic) with configurable provider, model, and API key management
 - Multi‑step Python code execution from LLM responses with rollback on error
 - Secure API key storage via system keyring, environment variables, or session‑only use
@@ -41,6 +41,15 @@ Current implementation status (Sprint 5.16, April 2026):
 - Cross-platform tiered API-key storage (Sprint 5.15): Python `keyring` → macOS `security` CLI → Linux `secret-tool` CLI → plaintext-0600 file. No more modal "could not save securely" — the Settings dialog has radio buttons (Automatic / Plaintext / Session only) and shows where the key ended up inline.
 - Revolution-specific `shape is invalid` feedback + `fillet_arc_points` bevel helper for stepped-shaft profiles — no more self-intersecting wires from hand-rolled arc math (Sprint 5.16)
 - `no_code_generated` is now retriable with a stronger "emit a fenced python block, do not apologize" feedback — previously the LLM could deadlock the agent on a single prose response
+- Concrete-model registry (Sprint 5.17): the user picks a specific LLM by name ("DeepSeek Chat", "Claude 3.5 Sonnet") in a single dropdown. Adapter class, base URL, context window, file-handling strategy and per-model API-key slug are all auto-configured from `neurocad/llm/models.py`. DeepSeek's inline file-embed template is pre-wired.
+- Per-slug API keys: DeepSeek's key is stored separately from OpenAI's even though both use the OpenAI-compatible adapter — no more overwriting one with the other.
+- Truncation detection (Sprint 5.18): when the LLM hits its `max_tokens` ceiling, the agent shows a concrete split-into-blocks feedback instead of a bogus SyntaxError on the truncated code; default `max_tokens` bumped to 8192.
+- Tightened Quantity anti-pattern guidance: `obj.Length.Value` is now the only recommended path; `float(obj.Length)` is flagged as fragile.
+- Export button removed from the panel (feature was unused); `core/exporter.py` remains for programmatic use.
+- Chat panel autoscroll anchored via `verticalScrollBar.rangeChanged` (Sprint 5.19) — no more "chat went blank after N requests" drift; respects user scroll-up.
+- 3D-text canonical recipe (PART VII, Sprint 5.20): cross-platform `neurocad_default_font()` + `Draft.make_shapestring + Part::Extrusion` + `place_word_on_orbit` helper. Executor exposes `platform_name` and `file_exists` in the sandbox.
+- Smarter NameError feedback: if the undefined name looks like a FreeCAD document object (Capitalized / Cyrillic / contains `sphere`, `куб`, `bolt`, `шайб`, …), the suggestion is `varname = doc.getObject('...')` instead of the generic scoping message.
+- ViewObject attribute-error feedback: `FontSize / TextSize / LabelText / …` on a Part ViewProvider redirects the LLM to the PART VII 3D-text recipe.
 
 ## License
 

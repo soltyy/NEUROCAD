@@ -12,7 +12,7 @@ class AnthropicAdapter(LLMAdapter):
         self,
         api_key: str,
         model: str = "claude-3-haiku-20240307",
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         temperature: float = 0.0,
         timeout: float = 120.0,
     ):

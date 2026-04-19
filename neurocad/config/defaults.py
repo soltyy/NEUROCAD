@@ -638,9 +638,27 @@ if face_name:
 
 ## QUANTITY vs FLOAT — reading object properties returns FreeCAD Quantity, not float
 # box.Height → Quantity("50 mm"), NOT 50.0 — arithmetic with plain float raises
-# "Quantity::operator Unit mismatch". Use your own numeric variables:
-#   h = 50.0; box.Height = h   → then use h in calculations, not box.Height
-# If you must read back a property: float(box.Height) → 50.0
+# "Quantity::operator +/- Unit mismatch" and the whole attempt burns.
+#
+# WRONG (all three fail at runtime):
+#   x = box.Height - 10                  # Quantity minus float → Unit mismatch
+#   door_h = float(door.Height)          # "works" in some FreeCAD builds, but hides
+#                                        # the bug and breaks under PartDesign features
+#   y = door.Length + handle_width       # +1 for every existing failure log
+#
+# RIGHT — always use .Value on the property:
+#   x = box.Height.Value - 10.0          # .Value is float, no units, always safe
+#   door_h = door.Height.Value
+#   y = door.Length.Value + handle_width
+#
+# When iterating over doc objects of unknown type, wrap in a helper:
+#   def _f(q):
+#       return q.Value if hasattr(q, "Value") else float(q)
+#   for door in doc.Objects:
+#       door_h = _f(door.Height)
+#
+# BEST — keep the original numeric literals in your own variables and reuse them:
+#   door_h = 720.0; door.Height = door_h   # no need to read back
 
 ## Placement conventions
 # Part::Box      — Placement.Base = LOWER-LEFT-BACK corner
@@ -1302,6 +1320,122 @@ def make_edge_cylinder(doc, start, end, radius, name="Edge"):
 # Project to 3D via a (3, N) projection matrix or a simple linear formula.
 # Draw a sphere at each 3D point and call make_edge_cylinder for each edge.
 # Do NOT try to render the nD "faces" or "cells" — they project degenerately.
+
+===========================================================================
+## PART VII — 3D text ("АТЛАС", labels, legends, orbiting words)
+===========================================================================
+# Do NOT use any of these — they have failed in dog-food sessions:
+#   App::Annotation.TextSize                         — 2D only, no geometry
+#   Part::Box.ViewObject.FontSize = 14               — AttributeError (FontSize
+#                                                      does not exist on
+#                                                      ViewProviderPartExt)
+#   Part::Box.Label = "А"                            — renames the object, does
+#                                                      NOT draw the letter
+# The ONLY reliable path for a 3D glyph is Draft.make_shapestring() returning
+# an outline Wire, then Part::Extrusion of that wire into a solid.
+#
+# ----- Cross-platform font resolver -----------------------------------------
+# Draft.make_shapestring REQUIRES an existing TTF/OTF file path. Hard-coding
+# "/usr/share/fonts/truetype/freefont/FreeSans.ttf" breaks on macOS & Windows.
+# The executor pre-injects two helpers (DO NOT try to `import os` or
+# `import sys` — both are blocked by the sandbox tokenizer):
+#   platform_name: str     — e.g. "darwin", "linux", "win32"
+#   file_exists(path): bool
+# Always resolve the font at runtime with them:
+def neurocad_default_font() -> str:
+    # Return the first TTF/OTF that actually exists on this OS. Raises on none.
+    if platform_name == "darwin":
+        candidates = [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/Library/Fonts/Arial.ttf",
+        ]
+    elif platform_name.startswith("win"):
+        candidates = [
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/tahoma.ttf",
+        ]
+    else:  # linux / other unix
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+    for path in candidates:
+        if file_exists(path):
+            return path
+    raise RuntimeError(
+        "No default font found. Pass an explicit FontFile to Draft.make_shapestring."
+    )
+#
+# ----- Single 3D letter -----------------------------------------------------
+font_file = neurocad_default_font()
+letter_wire = Draft.make_shapestring(String="A", FontFile=font_file, Size=10.0)
+# make_shapestring returns a Draft ShapeString object — its .Shape is the 2D
+# outline (Wire / Compound of Wires). Extrude it into 3D:
+letter_3d = doc.addObject("Part::Extrusion", "Letter_A")
+letter_3d.Base = letter_wire
+letter_3d.Dir = FreeCAD.Vector(0, 0, 3.0)        # letter thickness
+letter_3d.LengthFwd = 3.0
+letter_3d.Solid = True
+letter_wire.Visibility = False
+doc.recompute()
+#
+# ----- Word on a circular orbit around a sphere / any center ---------------
+# Canonical pattern used by "АТЛАС КОНСАЛТИНГ по орбите":
+import math
+def place_word_on_orbit(doc, word: str, center, orbit_r: float,
+                        letter_size: float = 10.0, depth: float = 3.0,
+                        skip_spaces: bool = True,
+                        font_file: str | None = None):
+    # Writes `word` around a horizontal circle at height `center.z`. Each
+    # letter is rotated so its baseline is TANGENT to the orbit (reads "around"
+    # the sphere when viewed from above).
+    if font_file is None:
+        font_file = neurocad_default_font()
+    letters_placed = []
+    chars = [c for c in word if (not skip_spaces or c != " ")]
+    n = len(chars)
+    if n == 0:
+        return letters_placed
+    for i, ch in enumerate(chars):
+        angle_deg = i * (360.0 / n)
+        angle_rad = math.radians(angle_deg)
+        x = float(center.x) + orbit_r * math.cos(angle_rad)
+        y = float(center.y) + orbit_r * math.sin(angle_rad)
+        z = float(center.z)
+        ss = Draft.make_shapestring(String=ch, FontFile=font_file, Size=letter_size)
+        ss.Label = f"Letter_{i:02d}_{ch}"
+        # Rotate each letter around Z so its baseline is tangent (perpendicular
+        # to the radial vector). +90° puts the letter facing "outward".
+        rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), angle_deg + 90.0)
+        ss.Placement = FreeCAD.Placement(FreeCAD.Vector(x, y, z), rot)
+        ext = doc.addObject("Part::Extrusion", f"Letter3D_{i:02d}_{ch}")
+        ext.Base = ss
+        ext.Dir = FreeCAD.Vector(0, 0, depth)
+        ext.LengthFwd = depth
+        ext.Solid = True
+        ss.Visibility = False
+        letters_placed.append(ext)
+    doc.recompute()
+    return letters_placed
+#
+# Usage, e.g. "АТЛАС КОНСАЛТИНГ" around a sphere named ПрозрачнаяСфера:
+#   sph = doc.getObject("ПрозрачнаяСфера")
+#   place_word_on_orbit(doc, "АТЛАС КОНСАЛТИНГ",
+#                       center=sph.Placement.Base,
+#                       orbit_r=sph.Radius.Value + 15.0,    # .Value to avoid
+#                                                            # Quantity + float
+#                       letter_size=12.0, depth=3.0)
+#
+# Hard rules (from the АТЛАС dog-food):
+#   1. Never do `obj.Radius + number` — use `obj.Radius.Value + number`.
+#   2. Never do `obj.ViewObject.FontSize = X` — PartViewProvider has no FontSize.
+#   3. Never pass a hard-coded Linux font path — always route through
+#      `neurocad_default_font()` or an explicit user-supplied path.
+#   4. "сколько влезет по кругу" = divide 360° by the number of non-space
+#      characters; do NOT try to fit by arc length (glyph widths vary).
 
 ===========================================================================
 ## Blocked (runtime error if used):

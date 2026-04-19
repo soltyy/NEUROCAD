@@ -236,15 +236,25 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._scroll_layout = scroll_layout
         self._scroll_content = scroll_content
 
+        # Autoscroll anchoring. `rangeChanged` fires AFTER Qt lays out the
+        # scroll content — that's the only moment at which `maximum()` holds
+        # the true bottom of the freshly-added bubble. If we relied on our
+        # own QTimer(0) → setValue(maximum) alone, we'd race the layout and
+        # freeze on a stale "bottom" that's above the real content (visible
+        # to the user as an empty panel with scrollbar pinned at the bottom).
+        # `_stick_to_bottom` lets the user scroll up and stay there — we only
+        # re-anchor when they've scrolled back down to near the current bottom.
+        self._stick_to_bottom = True
+        scroll.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
+        scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
+
         # Input elements
         self._input = AdaptivePlainTextEdit(scroll_area=self._scroll_area)
         # placeholder already set in class
         self._send_btn = QtWidgets.QPushButton("→")
         self._snapshot_btn = QtWidgets.QPushButton("Snapshot")
-        self._export_btn = QtWidgets.QPushButton("Export")
-        # Style secondary buttons (Snapshot, Export)
+        # Style secondary buttons (Snapshot)
         self._snapshot_btn.setFixedHeight(24)
-        self._export_btn.setFixedHeight(24)
         secondary_style = """
             QPushButton {
                 background: #f9fafb;
@@ -263,7 +273,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
             }
         """
         self._snapshot_btn.setStyleSheet(secondary_style)
-        self._export_btn.setStyleSheet(secondary_style)
         # Style send button as round blue 30x30
         self._send_btn.setFixedSize(30, 30)
         self._send_btn.setStyleSheet("""
@@ -332,7 +341,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         # Toolbar row with compact secondary buttons and round send button
         toolbar_row = QtWidgets.QHBoxLayout()
         toolbar_row.addWidget(self._snapshot_btn)
-        toolbar_row.addWidget(self._export_btn)
         toolbar_row.addStretch()
         toolbar_row.addWidget(self._send_btn)
         input_box_layout.addLayout(toolbar_row)
@@ -367,7 +375,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         """Connect UI signals."""
         self._send_btn.clicked.connect(self._on_btn_clicked)
         self._snapshot_btn.clicked.connect(self._on_snapshot_requested)
-        self._export_btn.clicked.connect(self._on_export_requested)
         self._input.submitted.connect(self._on_submit)
 
     def _add_message(self, role: str, text: str):
@@ -396,24 +403,49 @@ class CopilotPanel(QtWidgets.QDockWidget):
         bubble.setMaximumWidth(max_width)
 
     def _queue_scroll_to_bottom(self):
-        """Schedule a scroll to bottom if not already pending."""
+        """Mark the view as wanting to snap to bottom on the next layout pass.
+
+        Actual scrolling happens in `_on_scroll_range_changed`, triggered by
+        Qt AFTER the newly-added widget has been laid out. Scheduling a
+        setValue(maximum) here directly would race the layout and freeze on
+        a stale bottom.
+        """
+        self._stick_to_bottom = True
+        # Still queue a fallback QTimer scroll: some bubble updates don't
+        # change the scroll range (e.g. text appended within existing width),
+        # in which case rangeChanged doesn't fire.
         if self._scroll_pending:
             return
         self._scroll_pending = True
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
-        """Scroll chat area to the bottom."""
+        """Fallback scroll-to-bottom (see `_on_scroll_range_changed` for the
+        primary anchor)."""
         self._scroll_pending = False
         scrollbar = self._scroll_area.verticalScrollBar()
         if scrollbar is not None:
             scrollbar.setValue(scrollbar.maximum())
 
+    def _on_scroll_range_changed(self, _min_val: int, max_val: int):
+        """Qt fired this right after the layout updated the scrollable range.
+        If the user wants to stick to the bottom, this is where we anchor —
+        `max_val` is the real, post-layout maximum, so no drift."""
+        if self._stick_to_bottom:
+            self._scroll_area.verticalScrollBar().setValue(max_val)
+
+    def _on_scroll_value_changed(self, value: int):
+        """Track whether the user manually scrolled away from the bottom.
+        If they scroll up, we stop auto-anchoring until they scroll back
+        within ~20 px of the bottom."""
+        scrollbar = self._scroll_area.verticalScrollBar()
+        distance_from_bottom = scrollbar.maximum() - value
+        self._stick_to_bottom = distance_from_bottom <= 20
+
     def _set_busy(self, busy: bool):
         """Toggle between send mode (→) and stop mode (■)."""
         self._input.setEnabled(not busy)
         self._snapshot_btn.setEnabled(not busy)
-        self._export_btn.setEnabled(not busy)
         if busy:
             # Transform send button into stop button (always enabled so user can cancel)
             self._send_btn.setText("■")
@@ -650,64 +682,6 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._worker = None
         self._set_busy(False)
         self._add_message("feedback", "Timed out")
-
-    def _on_export_requested(self):
-        """Handle Export button click."""
-        from pathlib import Path
-
-        from ..core.active_document import get_active_document
-        from ..core.exporter import ExportError, export_last_successful
-        from .compat import QtWidgets
-
-        doc = get_active_document()
-        if doc is None:
-            log_warn("panel.export", "blocked: no active document")
-            self._add_message("feedback", "No active document.")
-            return
-
-        if not self._last_new_objects:
-            log_warn("panel.export", "no objects to export")
-            self._add_message("feedback", "No objects created yet.")
-            return
-
-        # File dialog
-        file_filter = "STEP files (*.step *.stp);;STL files (*.stl)"
-        file_path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Export Geometry",
-            "",
-            file_filter,
-        )
-        if not file_path:
-            return
-
-        # Determine format from filter
-        if "STEP" in selected_filter:
-            fmt = "step"
-            if not file_path.lower().endswith((".step", ".stp")):
-                file_path += ".step"
-        else:
-            fmt = "stl"
-            if not file_path.lower().endswith(".stl"):
-                file_path += ".stl"
-
-        try:
-            export_last_successful(doc, Path(file_path), fmt, self._last_new_objects)
-        except ExportError as e:
-            log_error("panel.export", "export failed", error=str(e))
-            self._add_message("feedback", f"Export failed: {e}")
-            return
-        except Exception as e:
-            log_error("panel.export", "unexpected export error", error=e)
-            self._add_message("feedback", f"Export error: {e}")
-            return
-
-        filename = Path(file_path).name
-        log_info("panel.export", "export succeeded", path=file_path, format=fmt)
-        self._add_message(
-            "feedback",
-            f"Exported {len(self._last_new_objects)} object(s) to {filename}",
-        )
 
     def _on_snapshot_requested(self):
         """Show Snapshot button handler."""

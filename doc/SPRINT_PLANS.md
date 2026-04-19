@@ -1,4 +1,4 @@
-# NeuroCad · Sprint Plans v1.9
+# NeuroCad · Sprint Plans v2.2
 **Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 > **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
@@ -38,7 +38,11 @@
 - [Sprint 5.14 — Wireframe / Math Visualization + Vector 3D Guard](#sprint-514--wireframe--math-visualization--vector-3d-guard)
 - [Sprint 5.15 — Cross-Platform Tiered API Key Storage](#sprint-515--cross-platform-tiered-api-key-storage)
 - [Sprint 5.16 — Revolution Profile Diagnostics + No-Code Retry + Bevel Helper](#sprint-516--revolution-profile-diagnostics--no-code-retry--bevel-helper)
-- [Сводная таблица: что изменилось от v0.1 → v1.9](#сводная-таблица-что-изменилось-от-v01--v19)
+- [Sprint 5.17 — Concrete Model Registry + Per-Slug API Keys + File-Embed Infra](#sprint-517--concrete-model-registry--per-slug-api-keys--file-embed-infra)
+- [Sprint 5.18 — Truncation Detection + max_tokens Bump + Quantity Anti-Pattern + Export Button Removal](#sprint-518--truncation-detection--max_tokens-bump--quantity-anti-pattern--export-button-removal)
+- [Sprint 5.19 — Autoscroll Anchor Fix (verticalScrollBar.rangeChanged)](#sprint-519--autoscroll-anchor-fix-verticalscrollbarrangechanged)
+- [Sprint 5.20 — 3D Text Recipe + NameError "Forgot to Fetch" + ViewObject Attribute Feedback](#sprint-520--3d-text-recipe--nameerror-forgot-to-fetch--viewobject-attribute-feedback)
+- [Сводная таблица: что изменилось от v0.1 → v2.2](#сводная-таблица-что-изменилось-от-v01--v22)
 
 ---
 
@@ -1090,6 +1094,192 @@ Tiered кросс-платформенное хранилище API-ключа, 
 
 ---
 
+# Sprint 5.17 — Concrete Model Registry + Per-Slug API Keys + File-Embed Infra
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Пользовательский запрос — «пусть пользователь выбирает конкретную LLM, не слой реализации»: в текущем UI приходилось руками вводить `provider=openai` + `model=deepseek-reasoner` + `base_url=https://api.deepseek.com/v1` для доступа к DeepSeek. Плюс у DeepSeek принципиально другой подход к attachment'ам — их надо встраивать inline в prompt по шаблону `[file name]: ... [file content begin] ... [file content end] ... question`.
+
+## Цель
+
+Уровень абстракции повышается: **Model** (конкретный LLM) вместо **Provider + Model-string + Base URL**. Каждая модель — entry в curated `MODELS` registry с полной metadata: adapter class, model id, base_url, key_slug, context_window, file_handling стратегия + template для inline embedding.
+
+1. **`neurocad/llm/models.py`** — новый модуль с `ModelSpec` dataclass и списком `MODELS`. Записи:
+   - `openai:gpt-4o`, `openai:gpt-4o-mini`
+   - `anthropic:claude-3-5-sonnet`, `anthropic:claude-3-5-haiku`
+   - `deepseek:chat`, `deepseek:reasoner` (adapter=openai, base_url=DeepSeek, key_slug=**deepseek** — separate from OpenAI)
+   - `ollama:llama3.1` (local)
+2. **Per-slug key storage.** До Sprint 5.17 все OpenAI-compatible keys лежали под `"openai"`; DeepSeek key вытеснял OpenAI key в той же записи. Теперь каждая LLM хранит key под своим `key_slug` — DeepSeek под `"deepseek"`, OpenAI под `"openai"`, Ollama под `"ollama"`.
+3. **Legacy migration.** При загрузке старого `config.json` с полями `{provider, model, base_url}` — автоматическое сопоставление на ModelSpec по правилам: DeepSeek base_url → `deepseek:chat|reasoner`, Ollama base_url → `ollama:llama3.1`, литеральное совпадение `model_id` → spec, иначе provider-level fallback на `openai:gpt-4o-mini` / `anthropic:claude-3-5-haiku`.
+4. **Settings UI** — один dropdown «Model», ниже — info label с adapter / base URL / context window / file handling / key slug. Storage radio (Sprint 5.15) преемственно сохранён. Radio показывает тот самый backend, где лежит ключ ДЛЯ КОНКРЕТНОГО slug'а.
+5. **File-embed infra.** `build_file_attachment_prompt(spec, question, file_name, file_content)` форматирует промпт по `spec.file_embed_template` для inline моделей (DeepSeek), raises ValueError для native-upload моделей (OpenAI, Claude) — caller должен использовать native API. UI для attachment пока не включён — инфраструктура заложена под будущую функцию.
+
+**Non-goals:** streaming, native file upload API для OpenAI/Anthropic (разделить по спринтам — сначала user action, потом реализация), executor / agent / threading / sandbox не трогаем.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-LLM-033A  / Developer / llm/models.py — ModelSpec + curated MODELS + lookup helpers         / planned
+2. NC-DEV-CORE-033B / Developer / config.py — model_id schema + legacy migration                      / planned
+3. NC-DEV-LLM-033C  / Developer / registry.py — resolve ModelSpec + per-slug API key                  / planned
+4. NC-DEV-UI-033D   / Developer / settings.py — single Model combo + per-slug status label           / planned
+5. NC-DEV-LLM-033E  / Developer / build_file_attachment_prompt helper (infra only, no UI)            / planned
+6. NC-DEV-TEST-033F / Developer / tests/test_models.py + обновить test_adapters/settings/config       / planned
+7. NC-DEV-DOC-017   / Developer / Sprint 5.17 + RELEASE_NOTES v2.0                                    / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-LLM-033A** | Developer | 1 | `neurocad/llm/models.py` — ModelSpec + curated list | `llm/models.py` (новый файл) | `@dataclass(frozen=True) ModelSpec(id, display_name, adapter, model_id, base_url, key_slug, context_window, file_handling, file_embed_template, notes)`; `MODELS: tuple[ModelSpec, ...]` с 7 записями (OpenAI×2, Anthropic×2, DeepSeek×2, Ollama); функции `list_models()`, `get_model(id)`, `default_model_id()`, `infer_from_legacy_config(config)`; три file-handling константы: `FILE_HANDLING_NATIVE`, `FILE_HANDLING_INLINE`, `FILE_HANDLING_NONE`; `DEEPSEEK_INLINE_TEMPLATE` строка с `{file_name}`/`{file_content}`/`{question}` placeholders | `TASK CODE: NC-DEV-LLM-033A` / Курированный registry LLM-моделей. DeepSeek — adapter="openai" (wire-compat) но key_slug="deepseek" (separate credential). Ollama — local, key_slug="ollama" (dummy key). `infer_from_legacy_config` приоритет: base_url → model_id literal → provider fallback. |
+| **NC-DEV-CORE-033B** | Developer | 1 | `config.py` — model_id schema + legacy migration | `config/config.py` | `load()` возвращает `config["model_id"]` (новое); `_migrate_legacy(data)` вызывается на загрузке — если нет model_id, инферит через `models.infer_from_legacy_config` или fallback на default; legacy поля `provider/model/base_url` больше НЕ в config при save, но могут присутствовать в старом файле (миграция читает их); test `test_load_legacy_config_migrates_to_model_id` подтверждает {provider: openai, model: deepseek-reasoner, base_url: https://api.deepseek.com/v1} → `model_id: deepseek:reasoner` | `TASK CODE: NC-DEV-CORE-033B` / `_apply_defaults` выставляет `model_id=_DEFAULT_MODEL_ID` если его нет. `_migrate_legacy` (lazy-import `neurocad.llm.models`) обрабатывает legacy files. Старый test `test_load_missing_file` обновлён на `model_id`. |
+| **NC-DEV-LLM-033C** | Developer | 1 | `registry.py` — ModelSpec-based load + per-slug API key | `llm/registry.py`, `tests/test_adapters.py` | `_resolve_spec(config)` приоритет: explicit `model_id` → `infer_from_legacy_config` → default; explicit но unknown `model_id` — `ValueError("Unknown model_id")`; `_resolve_api_key(key_slug, session_key)` использует `NEUROCAD_API_KEY_<SLUG>` env-var и `key_storage.load_key(slug)`; `_spec_to_adapter_kwargs(spec, config)` собирает kwargs, spec.model_id/base_url overrides config; `load_adapter(config, session_key)` и `load_adapter_with_session_key(config, session_key)` через `_resolve_spec`; тесты: `test_load_adapter_env_key`, `test_unknown_model_id_raises`, `test_legacy_config_migration_deepseek`, `test_key_slug_separate_for_deepseek` | `TASK CODE: NC-DEV-LLM-033C` / Убрать прямой доступ к `config["provider"]` — только через spec. Spec определяет identity (adapter class, model_id, base_url, key_slug); config сохраняет ТОЛЬКО generation-side fields (timeout, max_tokens, temperature). `env_var = f"NEUROCAD_API_KEY_{key_slug.upper()}"` — для DeepSeek это `NEUROCAD_API_KEY_DEEPSEEK`. |
+| **NC-DEV-UI-033D** | Developer | 2 | Settings UI — single Model combo | `ui/settings.py`, `tests/test_settings.py` | Один `QComboBox` «Model» заполнен из `MODELS`, display-label = `display_name — notes`, userData = `spec.id`; `_current_spec()` → ModelSpec через `model_registry.get_model(...)`; `_model_info: QLabel` показывает «Adapter: openai · Base URL: https://api.deepseek.com/v1 · Context: 64,000 tokens · Files: inline · Key slug: deepseek»; `_on_model_changed` обновляет info + storage status; `_collect_config` возвращает `(config, api_key, spec)` (3-tuple); `_on_save` сохраняет `{model_id, timeout, max_created_objects}` и вызывает `save_api_key(spec.key_slug, api_key, tier=tier)`; «Empty API key + existing key stored» ветка сохраняет только non-key config без ошибки | `TASK CODE: NC-DEV-UI-033D` / Удалить `_provider_combo`, `_model_edit`, `_base_url_edit` — их заменяет единый `_model_combo`. Ключ всегда сохраняется под `spec.key_slug` (так OpenAI и DeepSeek не перетирают друг друга). |
+| **NC-DEV-LLM-033E** | Developer | 2 | file-embed helper | `llm/models.py` | Функция `build_file_attachment_prompt(spec, question, file_name, file_content)`: для `FILE_HANDLING_INLINE` — format `spec.file_embed_template`; для `FILE_HANDLING_NATIVE` — raises ValueError «use provider's file API»; для `FILE_HANDLING_NONE` — raises ValueError «does not support»; тесты для всех 3 веток | `TASK CODE: NC-DEV-LLM-033E` / Infra only — UI для attachment'а пока не включаем. |
+| **NC-DEV-TEST-033F** | Developer | 3 | tests/test_models.py (новый) + обновить test_adapters/settings/config | `tests/test_models.py`, `tests/test_adapters.py`, `tests/test_settings.py`, `tests/test_config.py` | Новый `test_models.py` (14 тестов): list/get/default, deepseek-uses-openai-adapter-with-deepseek-slug, legacy inference variants (deepseek/ollama/openai/anthropic/unknown), build_file_attachment_prompt branches; обновлены test_adapters (patch на `key_storage.load_key`, не keyring), test_settings (MagicMock нового UI + load_key patch в обоих scope'ах), test_config (model_id вместо provider); 271+ tests green | — |
+| **NC-DEV-DOC-017** | Developer | 4 | Sprint 5.17 + README + RELEASE_NOTES v2.0 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.17 в каноническом формате; версия 1.9 → 2.0 (major — breaking config schema); README upgrade на Sprint 5.17; RELEASE_NOTES содержит описание migration пути | — |
+
+**Правила останова Sprint 5.17:** изменение threading / transaction / sandbox → rejected / сохранение API key под `config["provider"]` без использования `spec.key_slug` → rejected (ровно эта ошибка перетирала OpenAI-key DeepSeek-ом) / возврат `config["provider"]`/`config["model"]`/`config["base_url"]` как обязательных полей → rejected (legacy-only read) / native file upload API для OpenAI/Anthropic в этом же sprint — отложено до 5.18 / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.18 — Truncation Detection + max_tokens Bump + Quantity Anti-Pattern + Export Button Removal
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Аудит сессии «кухня 4 метра» 2026-04-18: 2 из 2 первых попыток провалились с «SyntaxError: invalid syntax (line 1)» и «Tokenization error: EOF in multi-line statement» на обрезанных ответах LLM (332 символа и 3348 символов — оба обрываются посередине). Корень — `stop_reason == "length"` (max_tokens достигнут), но агент трактовал это как обычную ошибку в коде и ретраил тот же слишком-сложный prompt, получая те же truncation'ы. Плюс 3-й раз в dog-food всплыл `Quantity::operator +/- Unit mismatch` — feedback из Sprint 5.6 помогает с ретраем, но prompt-уровневое предупреждение было мутным. Пользователь отдельно попросил убрать Export button (не используется).
+
+## Цель
+
+Четыре узкие правки, все низкорисковые:
+
+1. **Truncation detection в agent.run.** До `extract_code_blocks` проверить `response.stop_reason`. Если `"length"` или `"max_tokens"` — выдать специфичный feedback про разбиение на блоки, аудит `error_category="truncated"`, retry если attempts < MAX_RETRIES.
+2. **Default `max_tokens`**: `OpenAIAdapter` и `AnthropicAdapter` — 4096 → 8192. Сложные сборки (кухонный гарнитур, стол с ящиками, велосипед целиком) реально требуют ~5–7k токенов ответа.
+3. **Quantity anti-pattern tightening** в `config/defaults.py`: явный список WRONG→RIGHT паттернов, включая `float(obj.Length)` как «технически работает но хрупко», `.Value` как единственный надёжный, и helper `_f(q)` для случая неизвестного типа property.
+4. **Убрать Export button** из панели + тесты (не используется в UX). Код экспортёра (`core/exporter.py`) остаётся на месте — вызывается программно при необходимости.
+
+**Non-goals:** streaming, native file upload API (отложено), изменение threading / transaction / sandbox / executor.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-UI-034X   / Developer / Удалить Export button + его тесты                                 / planned
+2. NC-DEV-CORE-034A / Developer / Truncation detection в agent.run (stop_reason=length|max_tokens)  / planned
+3. NC-DEV-LLM-034B  / Developer / Default max_tokens 4096 → 8192 в OpenAI/Anthropic adapters        / planned
+4. NC-DEV-CORE-034C / Developer / Quantity anti-pattern (WRONG/RIGHT блок в defaults.py)            / planned
+5. NC-DEV-TEST-034D / Developer / test_run_truncated_response_detected + max_tokens assertions     / planned
+6. NC-DEV-DOC-018   / Developer / Sprint 5.18 + RELEASE_NOTES v2.1                                 / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-UI-034X** | Developer | 0 | Export button удалён | `ui/panel.py`, `tests/test_panel.py` | `_export_btn` поле, `_on_export_requested()` метод, import из `core.exporter` в панели, signal-connect и `_set_busy` reference — все удалены; test_panel.py больше не содержит `_export_btn`/`_on_export_requested` | `TASK CODE: NC-DEV-UI-034X` / Функция экспорта не использовалась по dog-food'у. Оставить core/exporter.py нетронутым для возможного будущего auto-export. |
+| **NC-DEV-CORE-034A** | Developer | 1 | Truncation detection в agent.run | `core/agent.py`, `tests/test_agent.py` | До `extract_code_blocks` — проверка `_stop = (response.stop_reason or "").lower()`; если `_stop in ("length", "max_tokens")` — добавить в history feedback про truncation с инструкцией «split into 2–3 fenced blocks», audit_log("agent_attempt", error_category="truncated"), `continue` если attempts < MAX_RETRIES, иначе audit_log("agent_error", error_type="truncated") + return; тесты `test_run_truncated_response_detected_and_retries`, `test_run_truncated_max_tokens_variant_also_detected` | `TASK CODE: NC-DEV-CORE-034A` / Ответ 332 символа с "SyntaxError на line 1" — реальная причина не синтаксис, а что LLM прервался посередине. Feedback говорит: «Your previous response was TRUNCATED at N chars because it hit the max_tokens ceiling. Split into 2–3 fenced blocks. Do NOT just re-emit the same long block — it will truncate again.» |
+| **NC-DEV-LLM-034B** | Developer | 1 | Default `max_tokens` bump | `llm/openai.py`, `llm/anthropic.py`, `tests/test_agent.py` | `OpenAIAdapter.max_tokens: int = 8192`, `AnthropicAdapter.max_tokens: int = 8192`; тесты `test_openai_adapter_default_max_tokens_raised_to_8192` и `test_anthropic_adapter_default_max_tokens_raised_to_8192` | `TASK CODE: NC-DEV-LLM-034B` / 4096 достаточно для простого болта, но не для кухни. 8192 покрывает ~95% dog-food случаев. |
+| **NC-DEV-CORE-034C** | Developer | 2 | Quantity anti-pattern | `config/defaults.py` | Существующий раздел `## QUANTITY vs FLOAT` расширен: 3 WRONG примера (Quantity minus/plus float, float() cast как fragile, повторное использование property вместо локальной переменной), 3 RIGHT эквивалента через `.Value`; добавлен helper `_f(q): return q.Value if hasattr(q, "Value") else float(q)` для неизвестных типов; финальная рекомендация BEST — хранить original literals в своих переменных | `TASK CODE: NC-DEV-CORE-034C` / `float(obj.Length)` работал в dog-food и теперь учит LLM плохому. Новый RIGHT — `.Value` всегда. Добавить anti-pattern про «reading back property вместо хранения локальной переменной». |
+| **NC-DEV-TEST-034D** | Developer | 3 | Tests | `tests/test_agent.py` | `test_run_truncated_response_detected_and_retries` (stop_reason="length" → 3 attempts, error contains "truncated"), `test_run_truncated_max_tokens_variant_also_detected` (stop_reason="max_tokens" вариант), `test_openai_adapter_default_max_tokens_raised_to_8192`, `test_anthropic_adapter_default_max_tokens_raised_to_8192` | — |
+| **NC-DEV-DOC-018** | Developer | 4 | Sprint 5.18 + RELEASE_NOTES v2.1 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.18 в каноническом формате; версия 2.0 → 2.1 | — |
+
+**Правила останова Sprint 5.18:** изменение threading / transaction / sandbox → rejected / default max_tokens > 16000 без benchmark evidence → rejected (лишний расход токенов на простые запросы) / удаление `core/exporter.py` вместе с кнопкой → rejected (оставляем для программного вызова) / замена `float(q)` на `q.Value` в уже написанных snippet'ах defaults.py без контекста (могут быть случаи где `float()` нужен) → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.19 — Autoscroll Anchor Fix (verticalScrollBar.rangeChanged)
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Пользователь приложил скриншот — после нескольких запросов панель пустая, scrollbar в самом низу. Контент есть, но скролл зафризился на устаревшем «низе» (OLD `maximum()`), а новые bubble'и оказывались ЗА viewport'ом.
+
+## Цель
+Починить autoscroll через стандартный Qt-идиом «stick-to-bottom chat»: хук на `verticalScrollBar().rangeChanged` — сигнал срабатывает ПОСЛЕ того, как Qt layout обновил scroll range. Предыдущий подход `QTimer.singleShot(0, setValue(maximum))` гонялся с layout pipeline, читал OLD maximum и фриз накапливался с каждым запросом.
+
+Плюс: хук на `valueChanged` — если пользователь сам проскроллил вверх (distance from bottom > 20 px), `_stick_to_bottom = False`, автоанкор отключается до возврата к низу.
+
+**Non-goals:** streaming-bubble refresh (другой класс задачи); chat-history-persistence.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-UI-035A  / Developer / _on_scroll_range_changed + _on_scroll_value_changed + signal hooks  / planned
+2. NC-DEV-TEST-035B / Developer / 3 regression тестa (sticky / scrolled-up / re-enable)              / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-UI-035A** | Developer | 1 | Autoscroll anchor через rangeChanged | `ui/panel.py` | `_stick_to_bottom: bool = True` в `__init__`; `verticalScrollBar().rangeChanged` connect → `_on_scroll_range_changed(min, max_val)` вызывает `setValue(max_val)` если `_stick_to_bottom`; `valueChanged` connect → `_on_scroll_value_changed(value)` обновляет `_stick_to_bottom = (scrollbar.maximum() - value) <= 20`; `_queue_scroll_to_bottom` теперь устанавливает `_stick_to_bottom = True` (fallback QTimer оставлен) | `TASK CODE: NC-DEV-UI-035A` / `scrollbar.setValue(scrollbar.maximum())` в `_scroll_to_bottom` читал OLD maximum до обновления layout. Signal rangeChanged срабатывает уже с post-layout `max_val`. |
+| **NC-DEV-TEST-035B** | Developer | 2 | 3 regression теста | `tests/test_panel.py` | `test_range_changed_snaps_to_bottom_when_sticky` — `_stick_to_bottom=True` → scrollbar.setValue(max_val); `test_range_changed_respects_user_scrolled_up` — `_stick_to_bottom=False` → setValue НЕ вызван; `test_value_changed_re_enables_sticky_when_user_scrolls_back_to_bottom` — переход 500 → 990 (max=1000) снова ставит `_stick_to_bottom=True` | — |
+
+**Правила останова Sprint 5.19:** изменение threading / transaction / sandbox → rejected / убрать fallback QTimer scroll (нужен для случаев когда range не меняется, напр. append_text без изменения ширины) → rejected / ответ без TASK CODE = невалиден.
+
+---
+
+# Sprint 5.20 — 3D Text Recipe + NameError "Forgot to Fetch" + ViewObject Attribute Feedback
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Dog-food запрос «по орбите сферы запусти слова АТЛАС КОНСАЛТИНГ, по кругу сколько влезет» — 3 попытки, `max_retries_exhausted`. Три РАЗНЫЕ корневые причины за 3 попытки:
+1. **Attempt 1**: `Quantity::operator +` — `сфера.Radius + 5.0` (Sprint 5.18 anti-pattern не защитил). Плюс hardcoded Linux font path `/usr/share/fonts/truetype/freefont/FreeSans.ttf` — на macOS файла нет.
+2. **Attempt 2**: `name 'прозрачная_сфера' is not defined` — LLM забыл `прозрачная_сфера = doc.getObject(...)` на первой строке. Single-block NameError, текущий feedback (generic «(1) defined inside if block, (2) previous request, (3) typo») не подсказывает правильный fix.
+3. **Attempt 3**: `'PartGui.ViewProviderPartExt' object has no attribute 'FontSize'` — LLM попытался сделать «текст» через `Part::Box.ViewObject.FontSize = 14`. `FontSize` существует только у DraftText / Annotation ViewProvider'ов.
+
+**Глубже**: в defaults.py **нет рецепта для 3D-текста**. LLM изобретает разные подходы, все тупиковые.
+
+## Цель
+
+Три узкие правки:
+
+1. **PART VII — canonical 3D text recipe в defaults.py** с cross-platform font resolver (`neurocad_default_font()` использует injected `platform_name` + `file_exists`). Плюс `place_word_on_orbit(doc, word, center, orbit_r)` helper — рецепт ровно под «слова АТЛАС по кругу».
+2. **Executor inject'ит `platform_name: str` и `file_exists(path): bool`** в namespace — sandbox по-прежнему блокирует `import os` / `import sys`, но минимально необходимый surface для font-detection доступен.
+3. **NameError feedback — single-block «forgot to fetch» heuristic.** Если varname выглядит как имя объекта (capitalized, Cyrillic, или содержит token вроде `sphere / куб / bolt / шайб`) — выдать конкретный fix `varname = doc.getObject('...')`. Lowercase scoping-typos остаются на generic branch.
+4. **ViewObject attribute-error feedback branch.** `FontSize / FontName / TextSize / TextColor / LabelText / Justification` на `ViewProviderPartExt` → redirect на PART VII recipe. Generic unknown attribute → список валидных ViewObject properties (ShapeColor / Transparency / LineWidth / Visibility / DisplayMode).
+
+**Non-goals:** native file-upload API для моделей (отложено с 5.17); GUI-зависимый text placement через FreeCADGui.
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-036A / Developer / executor injects platform_name + file_exists                       / planned
+2. NC-DEV-CORE-036B / Developer / PART VII canonical 3D text recipe в defaults.py                    / planned
+3. NC-DEV-CORE-036C / Developer / NameError feedback forgot-to-fetch heuristic                       / planned
+4. NC-DEV-CORE-036D / Developer / ViewObject attribute-error feedback                                / planned
+5. NC-DEV-TEST-036E / Developer / 4 новых теста                                                      / planned
+6. NC-DEV-DOC-020   / Developer / Sprint 5.20 + RELEASE_NOTES v2.2                                  / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-036A** | Developer | 1 | Executor injects `platform_name` + `file_exists` | `core/executor.py`, `tests/test_agent.py` | `_build_namespace(doc)` добавляет `"platform_name": sys.platform` и `"file_exists": lambda path: os.path.exists(path)` в namespace; sandbox `_IMPORT_CONTEXT_ONLY` не меняется (os/sys по-прежнему запрещены через `import`); test `test_executor_namespace_exposes_platform_name_and_file_exists` | `TASK CODE: NC-DEV-CORE-036A` / Модули os/sys импортируются под `_exec_os`/`_exec_sys` префиксом чтобы избежать потенциальной коллизии с LLM-generated кодом. file_exists wrapped в try/except Exception → False. |
+| **NC-DEV-CORE-036B** | Developer | 1 | PART VII canonical 3D text recipe | `config/defaults.py` | Новая секция `## PART VII — 3D text (АТЛАС, labels, legends, orbiting words)` между PART VI и `## Blocked`; anti-patterns (App::Annotation.TextSize, Part::Box.ViewObject.FontSize, Part::Box.Label как тщетная попытка); `neurocad_default_font()` с candidates для darwin/win/linux; single letter example `Draft.make_shapestring + Part::Extrusion`; `place_word_on_orbit(doc, word, center, orbit_r, ...)` helper с tangent rotation `+90°`; 4 hard rules в конце (не .Radius+N, не ViewObject.FontSize, не hard-coded font path, сколько влезет = 360°/len(non_space)) | `TASK CODE: NC-DEV-CORE-036B` / Использовать platform_name и file_exists из executor namespace (НЕ `import os` / `import sys` — sandbox блокирует). Canonical example: `place_word_on_orbit(doc, "АТЛАС КОНСАЛТИНГ", center=sph.Placement.Base, orbit_r=sph.Radius.Value + 15.0)` — `.Value` явно демонстрирует antiQuantity. |
+| **NC-DEV-CORE-036C** | Developer | 2 | NameError single-block «forgot to fetch» | `core/agent.py`, `tests/test_agent.py` | В `_make_feedback` NameError ветке ПОСЛЕ multi-block check — новый heuristic: `_looks_like_object = varname[0].isupper() or not varname.isascii() or any(tok in varname.lower() for tok in _obj_tokens)`; _obj_tokens = {sphere, cube, bolt, gear, …, сфер, куб, болт, …} (30+ объектных токенов EN+RU); если True — выдать «name looks like a document object... `varname = doc.getObject('<NameInDocument>')`»; иначе старый generic message; тесты для Cyrillic, capitalized и lowercase-scoping variants | `TASK CODE: NC-DEV-CORE-036C` / Ключевой сценарий: `name 'прозрачная_сфера' is not defined` — Cyrillic определяется через `not varname.isascii()`. Для `pitch` (lowercase, ASCII, не в _obj_tokens) — остаётся generic message. |
+| **NC-DEV-CORE-036D** | Developer | 2 | ViewObject attribute-error feedback | `core/agent.py`, `tests/test_agent.py` | В `_make_feedback` runtime-блок — ветка `"viewprovider" in error_lower and "has no attribute" in error_lower`; извлекается bad_attr; если bad_attr in {FontSize, FontName, TextSize, TextColor, LabelText, Justification} — redirect на PART VII recipe; иначе — список валидных properties (ShapeColor, Transparency, LineWidth, Visibility, DisplayMode); тесты | `TASK CODE: NC-DEV-CORE-036D` / LLM часто путает DraftText ViewProvider с Part ViewProvider. Явно напомнить что font baked в outline Draft.make_shapestring. |
+| **NC-DEV-TEST-036E** | Developer | 3 | 4 новых теста | `tests/test_agent.py` | `test_make_feedback_nameerror_forgot_to_fetch_single_block` (Russian Cyrillic, capitalized, lowercase-typo), `test_make_feedback_viewobject_fontsize`, `test_make_feedback_viewobject_generic_attribute_error`, `test_executor_namespace_exposes_platform_name_and_file_exists` | — |
+| **NC-DEV-DOC-020** | Developer | 4 | Sprint 5.20 + RELEASE_NOTES v2.2 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.20 в каноническом формате; версия 2.1 → 2.2 | — |
+
+**Правила останова Sprint 5.20:** разблокировка `import os` / `import sys` в executor → rejected (нужны только `platform_name` + `file_exists`, остальная поверхность опасна) / добавление LLM-generated hardcoded font path без `neurocad_default_font()` fallback → rejected / выдача feedback «попробуй App::Annotation» — rejected (это 2D only, пройдёт) / ответ без TASK CODE = невалиден.
+
+---
+
+### Post-merge hotfix (same sprint): config-wipe on Save
+
+После закрытия 5.18 — пользовательское наблюдение «исправляя конфиг нельзя испортить его». Воспроизведение: Settings `_collect_config` возвращал только 3 UI-поля (`model_id`, `timeout`, `max_created_objects`); `save()` писал ТОЛЬКО их; остальные custom-значения (`audit_log_enabled=False`, `snapshot_max_chars=2000`, `exec_handoff_timeout_s=120`) стирались с диска. На следующий `load()` `_apply_defaults` заполнял их DEFAULT'ами — пользовательские настройки терялись молча.
+
+**Фикс:** `_collect_config` теперь **merge'ит** UI-поля в `self._config` (загруженный при открытии диалога), дропая только legacy-тройку `{provider, model, base_url}` (сохранить эти нельзя — они конфликтуют с `model_id`). Тесты:
+- `test_on_save_preserves_non_ui_config_fields` — user's `audit_log_enabled=False`, `snapshot_max_chars=2000`, `exec_handoff_timeout_s=120` сохраняются
+- `test_on_save_drops_legacy_provider_and_base_url` — legacy `provider`/`model`/`base_url` не просачиваются в новый файл
+
+---
+
 **Deferred (not in this sprint):**
 - Блокировка `ViewObject` в executor — низкий приоритет, ViewObject не опасен; добавить лишь warning что в headless-контексте modification не persist.
 - Audit field `failed_block_idx` уже добавлен в Sprint 5.13 — можно прогнать статистику за сутки после следующего dog-food, чтобы количественно подтвердить снижение naming drift.
@@ -1160,3 +1350,16 @@ Tiered кросс-платформенное хранилище API-ключа, 
 | Shape-invalid feedback для Revolution | общий boolean/sweep диагноз не про self-intersecting 2D-профиль | Revolution-specific ветка: 5 пунктов про closed wire / one-side-of-axis / arc stitching / avoid-axis-touch (Sprint 5.16) |
 | `no_code_generated` | фатально на первой же попытке — ни одного retry | retriable: stronger feedback про «fenced block only, re-emit complete code»; retry до MAX_RETRIES (Sprint 5.16) |
 | Hand-rolled arc approximation | LLM кривит center (например `center_r = r_start + R` — самое наивное и самое частое) → self-intersection | `fillet_arc_points(r_start, z_start, r_end, z_end, n_pts=7)` linear-bevel helper в defaults.py; never self-intersects (Sprint 5.16) |
+| Model selection | provider="openai" + model="deepseek-reasoner" + base_url="https://api.deepseek.com/v1" руками — три поля, легко ошибиться | curated `ModelSpec` registry (llm/models.py) — один dropdown, всё auto-configured; 7 моделей: OpenAI×2, Anthropic×2, DeepSeek×2, Ollama (Sprint 5.17) |
+| API key storage slug | DeepSeek key перетирал OpenAI key (оба под slug=`openai`) | per-slug: `spec.key_slug` — `openai`/`anthropic`/`deepseek`/`ollama` (Sprint 5.17) |
+| File attachment strategy | не задокументирована | `file_handling` + `file_embed_template` в ModelSpec; `build_file_attachment_prompt(spec, question, file_name, file_content)` для inline моделей (DeepSeek); infra-only, UI в будущем (Sprint 5.17) |
+| Legacy config migration | `config["provider"]`/`model`/`base_url` явно в UI и коде | config хранит только `model_id`; `infer_from_legacy_config(data)` автоматически мигрирует старые файлы при `load()` (Sprint 5.17) |
+| Truncation detection | `stop_reason=length` → LLM возвращал обрезанный код → SyntaxError бесполезный, ретрай повторял ошибку | в agent.run проверка stop_reason ДО extract_code_blocks; feedback «split into 2–3 fenced blocks, don't re-emit same long block»; retry до MAX_RETRIES (Sprint 5.18) |
+| Default `max_tokens` | 4096 — мало для кухни / болта с резьбой / многосоставных сборок | 8192 в OpenAIAdapter и AnthropicAdapter (Sprint 5.18) |
+| Quantity anti-pattern | туманная формулировка «use your own numeric variables» → LLM продолжал писать `door.Length - 10` | явный WRONG/RIGHT блок: `.Value` всегда, `_f(q)` helper для неизвестных типов, «keep original literals in local variables» (Sprint 5.18) |
+| Export button | в панели, тесты, handler — но не использовался в dog-food | удалён из UI (код `core/exporter.py` оставлен для возможного программного вызова) (Sprint 5.18) |
+| Autoscroll anchor | `QTimer(0) → setValue(maximum)` гонялся с Qt layout → OLD max → фриз после ~3 запросов (панель показывала пустое поле) | signal hook на `verticalScrollBar().rangeChanged` — post-layout `max_val` всегда актуальный; `valueChanged` детектит ручной scroll-up и отключает анкор до возврата (Sprint 5.19) |
+| 3D text recipe | отсутствовал → LLM изобретал App::Annotation.TextSize / Part::Box.ViewObject.FontSize / hardcoded `/usr/share/fonts/...` | PART VII в defaults.py: `neurocad_default_font()` cross-platform + `Draft.make_shapestring + Part::Extrusion` + `place_word_on_orbit` helper (Sprint 5.20) |
+| Sandbox platform helpers | полный `os` / `sys` запрещён tokenizer'ом; нет способа узнать ОС | executor injects `platform_name: str` и `file_exists(path): bool` в namespace (Sprint 5.20) |
+| NameError single-block | generic «if block / previous request / typo» → не подсказывал «забыл doc.getObject» | heuristic «looks like object»: capitalized / Cyrillic / содержит объектный токен (sphere, куб, bolt, шайб, …) → явный fix `varname = doc.getObject('...')` (Sprint 5.20) |
+| ViewObject attribute errors | generic «Execution failed» → LLM слепо повторял FontSize на Part::Box | `FontSize / TextSize / LabelText / …` на `ViewProviderPartExt` → redirect на PART VII; остальные — список валидных Part-ViewObject properties (Sprint 5.20) |

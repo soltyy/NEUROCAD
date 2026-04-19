@@ -700,6 +700,142 @@ def test_make_feedback_shape_invalid():
     assert "isValid()" in feedback
 
 
+def test_run_truncated_response_detected_and_retries(qapp):
+    """Sprint 5.18: stop_reason='length' → truncation feedback + retry, not a
+    bogus SyntaxError-on-truncated-code silent loop.
+    """
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.history import History, Role
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    # Response pretends to be truncated mid-statement.
+    mock_response = MagicMock()
+    mock_response.content = "```python\nx = doc.addObject(\"Part::Box\""
+    mock_response.stop_reason = "length"
+    mock_adapter.complete.return_value = mock_response
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"):
+        result = run("heavy kitchen prompt", mock_doc, mock_adapter, history)
+
+    assert mock_adapter.complete.call_count == 3   # retried
+    assert result.ok is False
+    assert "truncated" in (result.error or "").lower()
+    # Feedback added to history mentions split-into-blocks
+    feedback = [i["content"] for i in history.items if i["role"] == Role.FEEDBACK]
+    assert feedback
+    assert any("TRUNCATED" in f or "max_tokens" in f for f in feedback)
+    assert any("split" in f.lower() or "fenced" in f.lower() for f in feedback)
+
+
+def test_run_truncated_max_tokens_variant_also_detected(qapp):
+    """Providers sometimes report 'max_tokens' instead of 'length' — same branch."""
+    from unittest.mock import MagicMock, patch
+    from neurocad.core.agent import run
+    from neurocad.core.history import History
+
+    mock_doc = MagicMock()
+    mock_adapter = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = "```python\npartial"
+    mock_response.stop_reason = "max_tokens"
+    mock_adapter.complete.return_value = mock_response
+    history = History()
+
+    with patch("neurocad.core.context.capture"), \
+         patch("neurocad.core.agent.build_system"):
+        result = run("heavy", mock_doc, mock_adapter, history)
+
+    assert result.ok is False
+    assert "truncated" in (result.error or "").lower()
+
+
+def test_openai_adapter_default_max_tokens_raised_to_8192():
+    """Sprint 5.18: default max_tokens bumped 4096 → 8192 so complex assemblies fit."""
+    from neurocad.llm.openai import OpenAIAdapter
+    adapter = OpenAIAdapter(api_key="x")
+    assert adapter.max_tokens == 8192
+
+
+def test_anthropic_adapter_default_max_tokens_raised_to_8192():
+    """Sprint 5.18: default max_tokens bumped 4096 → 8192 for Claude too."""
+    from neurocad.llm.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter(api_key="x")
+    assert adapter.max_tokens == 8192
+
+
+def test_make_feedback_nameerror_forgot_to_fetch_single_block():
+    """Sprint 5.20: single-block NameError for an object-like name should
+    point at `doc.getObject(...)` rather than the generic scoping message.
+    """
+    from neurocad.core.agent import _make_feedback
+    # Russian Cyrillic object name — definitely looks like a document object
+    fb_ru = _make_feedback(
+        "name 'прозрачная_сфера' is not defined", "runtime",
+        block_idx=1, total_blocks=1,
+    )
+    assert "doc.getObject" in fb_ru
+    assert "never fetched" in fb_ru.lower() or "document object" in fb_ru.lower()
+
+    # Capitalized English name — "ПрозрачнаяСфера" normalized pattern
+    fb_cap = _make_feedback(
+        "name 'BoltBody' is not defined", "runtime",
+        block_idx=1, total_blocks=1,
+    )
+    assert "doc.getObject" in fb_cap
+
+    # Lowercase pure-scoping typo — stays on generic branch
+    fb_generic = _make_feedback(
+        "name 'pitch' is not defined", "runtime",
+        block_idx=1, total_blocks=1,
+    )
+    assert "never fetched" not in fb_generic.lower()
+    assert "typo" in fb_generic.lower()
+
+
+def test_make_feedback_viewobject_fontsize():
+    """Sprint 5.20: FontSize on a Part ViewProvider → redirect to PART VII recipe."""
+    from neurocad.core.agent import _make_feedback
+    fb = _make_feedback(
+        "'PartGui.ViewProviderPartExt' object has no attribute 'FontSize'",
+        "runtime",
+    )
+    assert "FontSize" in fb
+    assert "Draft.make_shapestring" in fb
+    assert "neurocad_default_font" in fb
+    assert "Extrusion" in fb
+
+
+def test_make_feedback_viewobject_generic_attribute_error():
+    """Non-text ViewObject attribute errors get a generic diagnostic listing valid properties."""
+    from neurocad.core.agent import _make_feedback
+    fb = _make_feedback(
+        "'PartGui.ViewProviderPartExt' object has no attribute 'InvisibleMagic'",
+        "runtime",
+    )
+    assert "ShapeColor" in fb
+    assert "Transparency" in fb
+    # Does NOT mention the text-specific recipe for unrelated attributes
+    assert "Draft.make_shapestring" not in fb
+
+
+def test_executor_namespace_exposes_platform_name_and_file_exists():
+    """Sprint 5.20: executor injects `platform_name` and `file_exists` so the
+    PART VII font-resolver recipe works without `import os` / `import sys`."""
+    from unittest.mock import MagicMock
+    from neurocad.core.executor import _build_namespace
+    ns = _build_namespace(MagicMock())
+    assert "platform_name" in ns
+    assert isinstance(ns["platform_name"], str)
+    assert "file_exists" in ns
+    assert callable(ns["file_exists"])
+    # file_exists returns False for a clearly non-existent path
+    assert ns["file_exists"]("/definitely/not/a/real/path/xyz123") is False
+
+
 def test_make_feedback_shape_invalid_revolution_specific():
     """Sprint 5.16: 'Shape is invalid' on a Revolution-related object name gives
     revolution-specific hints (closed wire, one side of axis, fillet-arc bugs)

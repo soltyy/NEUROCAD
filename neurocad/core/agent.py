@@ -308,7 +308,42 @@ def _make_feedback(
                 f"{varname} = doc.getObject('ObjectName')."
             )
 
-        # Single-block response — fall back to the scoping / carry-over diagnosis.
+        # Single-block "forgot to fetch" heuristic — if the undefined name
+        # looks like a document object (capitalized, Cyrillic, or contains
+        # object-ish tokens) the LLM probably assumed it was "in scope" from
+        # the current document state and never fetched it. Prompt with the
+        # concrete corrective.
+        _obj_tokens = (
+            "sphere", "cube", "box", "cylinder", "cone", "torus", "prism",
+            "wedge", "shank", "head", "bolt", "gear", "wheel", "hub", "rim",
+            "shaft", "axis", "body", "fuse", "cut",
+            # common Russian object names the LLM tends to use:
+            "сфер", "куб", "шайб", "гайк", "болт", "колес", "обод",
+            "шкаф", "дверь", "ручк", "столешн",
+        )
+        _looks_like_object = (
+            varname and (
+                varname[0].isupper()
+                or not varname.isascii()                   # Cyrillic etc.
+                or any(tok in varname.lower() for tok in _obj_tokens)
+            )
+        )
+        if _looks_like_object:
+            return (
+                f"NameError: '{varname}' is not defined. This name looks like a "
+                f"document object the user expects to already exist — but you "
+                f"never fetched it into a Python variable. FreeCAD objects in "
+                f"the current document are NOT auto-bound to Python names; you "
+                f"must explicitly do: "
+                f"`{varname} = doc.getObject('<NameInDocument>')` at the top of "
+                f"your block. The name in the document's object tree may differ "
+                f"from your Python variable — check the exact label. If the "
+                f"object does not exist yet, create it first via "
+                f"`doc.addObject('Part::Sphere', '<Name>')` (or the appropriate "
+                f"type) before assigning properties."
+            )
+
+        # Otherwise — generic scoping / carry-over diagnosis.
         return (
             f"NameError: '{varname}' is not defined. Common causes: "
             f"(1) Variable defined inside an 'if' / 'for' block but used outside its scope — "
@@ -329,6 +364,33 @@ def _make_feedback(
             "'PartDesign::Feature' is not a valid FreeCAD object type. "
             "For a raw shape container use doc.addObject('Part::Feature', 'Name'). "
             "For PartDesign operations use body.newObject('PartDesign::Pad', ...) etc."
+        )
+    # Sprint 5.20: common ViewObject attribute errors — LLM confusing display-
+    # side providers (ViewProviderDraftText, ViewProviderAnnotation) with
+    # Part-shape providers (ViewProviderPartExt).
+    if "viewprovider" in error_lower and "has no attribute" in error_lower:
+        import re as _re
+        m = _re.search(r"has no attribute '(\w+)'", error)
+        bad_attr = m.group(1) if m else ""
+        if bad_attr in ("FontSize", "FontName", "TextSize", "TextColor",
+                        "LabelText", "Justification"):
+            return (
+                f"ViewObject AttributeError: Part/PartDesign shape ViewProviders "
+                f"do NOT expose text properties like '{bad_attr}'. "
+                "You cannot 'print' a letter by setting FontSize on a Part::Box. "
+                "For 3D text use the PART VII recipe: "
+                "Draft.make_shapestring(String=char, FontFile=neurocad_default_font(), "
+                "Size=N) → Part::Extrusion of the returned wire into a solid. "
+                "The resulting extrusion's ViewObject has ShapeColor, Transparency, "
+                "LineWidth — but NO FontSize (font is baked into the outline)."
+            )
+        return (
+            f"ViewObject AttributeError: the property '{bad_attr}' does not "
+            f"exist on this object's ViewProvider. Common valid Part/PartDesign "
+            f"ViewObject properties: ShapeColor (tuple of 3 floats 0..1), "
+            f"Transparency (0..100 int), LineWidth (float), Visibility (bool), "
+            f"DisplayMode ('Flat Lines'/'Shaded'/'Wireframe'). "
+            f"In headless execution, some ViewObject changes may silently no-op."
         )
     if "rotation constructor" in error_lower:
         return (
@@ -626,6 +688,77 @@ def run(
             )
 
         # Extract code blocks
+        # Sprint 5.18: detect truncation BEFORE trying to parse blocks. If the
+        # provider reports stop_reason == "length" the code is almost certainly
+        # cut mid-statement, and the downstream SyntaxError is unhelpful —
+        # surface the real cause to the LLM so it can split / shorten next time.
+        _stop = (response.stop_reason or "").lower()
+        if _stop in ("length", "max_tokens"):
+            truncation_note = (
+                f"Your previous response was TRUNCATED at {len(llm_text)} chars "
+                f"because it hit the max_tokens ceiling (stop_reason={_stop!r}). "
+                "The tail of your code is missing, which is why any syntax "
+                "error you may see next is bogus. Fix options: "
+                "(1) split the work into 2–3 fenced ```python``` blocks per the "
+                "Multi-block protocol — each block is sent in a SEPARATE "
+                "response, so the token budget resets; "
+                "(2) drop comments and repetitive placement boilerplate; "
+                "(3) parameterize + loop instead of repeating similar boxes. "
+                "Do NOT just re-emit the same long block — it will truncate again."
+            )
+            history.add(Role.FEEDBACK, truncation_note)
+            log_warn(
+                "agent.run",
+                "LLM response truncated at max_tokens",
+                attempt=attempts,
+                chars=len(llm_text),
+            )
+            _log_status(
+                f"LLM response truncated ({len(llm_text)} chars) — retrying",
+                attempt_notifications, callbacks,
+            )
+            audit_log(
+                "agent_attempt",
+                {
+                    "attempt": attempts,
+                    "max_retries": MAX_RETRIES,
+                    "llm_response_preview": llm_text,
+                    "ok": False,
+                    "error": f"LLM response truncated (stop_reason={_stop})",
+                    "error_category": "truncated",
+                    "new_object_names": [],
+                    "block_count": 0,
+                    "rollback_count": 0,
+                    "notifications": attempt_notifications,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                },
+                correlation_id=get_correlation_id(),
+            )
+            if attempts < MAX_RETRIES:
+                continue
+            audit_log(
+                "agent_error",
+                {
+                    "error_type": "truncated",
+                    "user_prompt_preview": text,
+                    "provider": getattr(adapter, "provider", type(adapter).__name__),
+                    "model": getattr(adapter, "model", "unknown"),
+                    "document_name": getattr(doc, "Name", None),
+                    "attempts": attempts,
+                    "error": f"LLM response truncated (stop_reason={_stop})",
+                },
+                correlation_id=get_correlation_id(),
+            )
+            return AgentResult(
+                ok=False,
+                attempts=attempts,
+                error=f"LLM response truncated at max_tokens (stop_reason={_stop})",
+                new_objects=[],
+                rollback_count=0,
+            )
+
         blocks = extract_code_blocks(llm_text)
         log_info("agent.run", "code blocks extracted", block_count=len(blocks))
         _log_status(f"code extracted, blocks={len(blocks)}", attempt_notifications, callbacks)

@@ -52,24 +52,44 @@ def test_get_config_dir_legacy():
 
 
 def test_load_missing_file():
-    """If config.json doesn't exist, return defaults."""
+    """If config.json doesn't exist, return defaults with model_id (Sprint 5.17)."""
     with patch.object(Path, "exists", return_value=False):
         config = load()
-    assert config["provider"] == "openai"
-    assert config["model"] == "gpt-4o-mini"
+    assert config["model_id"] == "openai:gpt-4o-mini"
     assert config["timeout"] == 180.0
 
 
+def test_load_legacy_config_migrates_to_model_id():
+    """Sprint 5.17: legacy {provider, model, base_url} triple is migrated to
+    a concrete model_id on load — no more raw provider/base_url in new code.
+    """
+    legacy = {
+        "provider": "openai",
+        "model": "deepseek-reasoner",
+        "base_url": "https://api.deepseek.com/v1",
+    }
+    with (
+        patch.object(Path, "exists", return_value=True),
+        patch("builtins.open", mock_open(read_data=json.dumps(legacy))),
+    ):
+        config = load()
+    assert config["model_id"] == "deepseek:reasoner"
+
+
 def test_load_existing_file():
-    """Existing config should be loaded and merged with defaults."""
+    """Existing config should be loaded and defaults merged.
+
+    Sprint 5.17: legacy provider/model fields still drive the migration to
+    model_id; the migrated config exposes model_id, not raw provider.
+    """
     mock_data = {"provider": "anthropic", "model": "claude-3-haiku"}
     with (
         patch.object(Path, "exists", return_value=True),
         patch("builtins.open", mock_open(read_data=json.dumps(mock_data))),
     ):
         config = load()
-    assert config["provider"] == "anthropic"
-    assert config["model"] == "claude-3-haiku"
+    # "provider: anthropic" without a specific model ID maps to cheap Haiku default
+    assert config["model_id"] == "anthropic:claude-3-5-haiku"
     assert config["timeout"] == 180.0
 
 

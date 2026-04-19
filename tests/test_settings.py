@@ -1,4 +1,9 @@
-"""Tests for the Sprint 5.15 Settings dialog (tiered key storage + inline status)."""
+"""Tests for the Sprint 5.17 Settings dialog.
+
+Single Model dropdown (populated from `neurocad.llm.models.MODELS`) replaces
+the old provider/model/base-URL triple. API-key tier radios (Automatic /
+Plaintext file / Session only) from Sprint 5.15 are preserved.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -8,20 +13,15 @@ from neurocad.ui.settings import SettingsDialog
 
 
 def _mock_ui(dialog: SettingsDialog,
-             provider: str = "openai",
-             model: str = "gpt-4o",
-             base_url: str = "",
+             model_id: str = "openai:gpt-4o-mini",
              timeout: float = 180.0,
              max_objects: int = 1000,
              api_key: str = "",
              tier: str = "auto") -> None:
-    """Replace dialog's UI widgets with MagicMocks set to the given values."""
-    dialog._provider_combo = MagicMock()
-    dialog._provider_combo.currentText.return_value = provider
-    dialog._model_edit = MagicMock()
-    dialog._model_edit.text.return_value = model
-    dialog._base_url_edit = MagicMock()
-    dialog._base_url_edit.text.return_value = base_url
+    """Replace the dialog's real widgets with MagicMocks."""
+    dialog._model_combo = MagicMock()
+    dialog._model_combo.currentData.return_value = model_id
+    dialog._model_info = MagicMock()
     dialog._timeout_spin = MagicMock()
     dialog._timeout_spin.value.return_value = timeout
     dialog._max_objects_spin = MagicMock()
@@ -38,130 +38,98 @@ def _mock_ui(dialog: SettingsDialog,
 
 
 def test_settings_dialog_initialization(qapp):
-    """SettingsDialog can be instantiated with default values and three radio buttons."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+    """Sprint 5.17: dialog has a model combo + 3 tier radios; no provider/base_url widgets."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog(None)
-    # UI widgets exist
-    assert dialog._provider_combo is not None
-    assert dialog._model_edit is not None
-    assert dialog._timeout_spin is not None
-    assert dialog._api_key_edit is not None
-    # Storage tier radio buttons
+
+    assert dialog._model_combo is not None
+    # Verify the combo contains all registry models
+    from neurocad.llm import models as reg
+    assert dialog._model_combo.count() == len(reg.list_models())
+    # Old widgets are gone
+    assert not hasattr(dialog, "_provider_combo")
+    assert not hasattr(dialog, "_base_url_edit")
+    assert not hasattr(dialog, "_model_edit")
+    # Tier radios
     assert dialog._tier_auto is not None
-    assert dialog._tier_plaintext is not None
-    assert dialog._tier_session is not None
-    # Default tier is Automatic
     assert dialog._tier_auto.isChecked() is True
-    assert dialog._tier_plaintext.isChecked() is False
-    assert dialog._tier_session.isChecked() is False
 
 
-def test_collect_config(qapp):
-    """_collect_config returns config dict and api key string."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_collect_config_returns_model_id_and_spec(qapp):
+    """Sprint 5.17: _collect_config returns (config, api_key, spec)."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, provider="anthropic", model="claude-3-5-sonnet",
-             base_url="https://api.anthropic.com", timeout=180.0,
-             max_objects=1000, api_key="secret-key")
+    _mock_ui(dialog, model_id="deepseek:chat", api_key="sk-ds", timeout=120.0, max_objects=500)
 
-    config, key = dialog._collect_config()
-    assert config == {
-        "provider": "anthropic",
-        "model": "claude-3-5-sonnet",
-        "base_url": "https://api.anthropic.com",
-        "timeout": 180.0,
-        "max_created_objects": 1000,
-    }
-    assert key == "secret-key"
+    config, key, spec = dialog._collect_config()
+    assert config["model_id"] == "deepseek:chat"
+    assert config["timeout"] == 120.0
+    assert config["max_created_objects"] == 500
+    # Legacy fields are NOT in the new config
+    assert "provider" not in config
+    assert "base_url" not in config
+    assert key == "sk-ds"
+    assert spec is not None
+    assert spec.id == "deepseek:chat"
+    assert spec.key_slug == "deepseek"
+    assert spec.base_url == "https://api.deepseek.com/v1"
 
 
-def test_selected_tier_reports_auto_by_default(qapp):
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_on_save_persists_key_under_spec_key_slug(qapp):
+    """Sprint 5.17: API key is saved under spec.key_slug, NOT the adapter class name."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, tier="auto")
-    assert dialog._selected_tier() == "auto"
-
-
-def test_selected_tier_plaintext(qapp):
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
-         patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
-         patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
-        dialog = SettingsDialog()
-    _mock_ui(dialog, tier="plaintext")
-    assert dialog._selected_tier() == "plaintext"
-
-
-def test_selected_tier_session(qapp):
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
-         patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
-         patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
-        dialog = SettingsDialog()
-    _mock_ui(dialog, tier="session")
-    assert dialog._selected_tier() == "session"
-
-
-def test_on_save_automatic_tier_persists_via_key_storage(qapp):
-    """_on_save with Automatic tier calls save_api_key and shows inline status."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
-         patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
-         patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
-        dialog = SettingsDialog()
-    _mock_ui(dialog, api_key="sk-test", tier="auto")
+    # DeepSeek uses openai adapter but must store key under "deepseek".
+    _mock_ui(dialog, model_id="deepseek:chat", api_key="sk-deepseek", tier="auto")
 
     with patch("neurocad.ui.settings.save_config") as mock_save_cfg, \
          patch("neurocad.ui.settings.save_api_key",
-               return_value=("System keyring", None)) as mock_save_key, \
+               return_value=("macOS Keychain", None)) as mock_save_key, \
          patch.object(dialog, "accept") as mock_accept:
         dialog._on_save()
 
-    # Config was saved (without api_key)
-    mock_save_cfg.assert_called_once_with({
-        "provider": "openai",
-        "model": "gpt-4o",
-        "timeout": 180.0,
-        "max_created_objects": 1000,
-    })
-    # save_api_key was called with the chosen tier
-    mock_save_key.assert_called_once_with("openai", "sk-test", tier="auto")
-    # Dialog accepted, no MessageBox raised
+    mock_save_cfg.assert_called_once()
+    saved = mock_save_cfg.call_args.args[0]
+    assert saved["model_id"] == "deepseek:chat"
+    # Key saved under "deepseek", not "openai"!
+    mock_save_key.assert_called_once_with("deepseek", "sk-deepseek", tier="auto")
     mock_accept.assert_called_once()
-    # Inline status reflects the backend name
-    assert dialog._storage_status.setText.called
-    status_html = dialog._storage_status.setText.call_args.args[0]
-    assert "System keyring" in status_html
 
 
-def test_on_save_plaintext_tier_forces_plaintext(qapp):
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_on_save_openai_uses_openai_key_slug(qapp):
+    """OpenAI models store the key under 'openai' slug."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, api_key="sk-plain", tier="plaintext")
+    _mock_ui(dialog, model_id="openai:gpt-4o", api_key="sk-openai", tier="auto")
 
     with patch("neurocad.ui.settings.save_config"), \
          patch("neurocad.ui.settings.save_api_key",
-               return_value=("Plaintext file (owner-only)", None)) as mock_save_key, \
+               return_value=("System keyring", None)) as mock_save_key, \
          patch.object(dialog, "accept"):
         dialog._on_save()
 
-    mock_save_key.assert_called_once_with("openai", "sk-plain", tier="plaintext")
-    status_html = dialog._storage_status.setText.call_args.args[0]
-    assert "Plaintext" in status_html
+    mock_save_key.assert_called_once_with("openai", "sk-openai", tier="auto")
 
 
-def test_on_save_session_tier_does_not_call_save_api_key(qapp):
-    """Session tier: build adapter, never call save_api_key."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_on_save_session_tier_builds_adapter_and_skips_storage(qapp):
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, api_key="sk-session", tier="session")
+    _mock_ui(dialog, model_id="openai:gpt-4o-mini", api_key="sk-session", tier="session")
 
     with patch("neurocad.ui.settings.save_config"), \
          patch("neurocad.ui.settings.save_api_key") as mock_save_key, \
@@ -175,47 +143,55 @@ def test_on_save_session_tier_does_not_call_save_api_key(qapp):
     assert dialog._adapter == "fake-adapter"
 
 
-def test_on_save_missing_key_shows_inline_warning(qapp):
-    """Empty key field → inline warning, no modal."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_on_save_missing_key_with_no_stored_key_warns(qapp):
+    """Empty key field AND no stored key → inline warning, no save."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
     _mock_ui(dialog, api_key="")
 
-    with patch("neurocad.ui.settings.save_config") as mock_save_cfg, \
+    # load_key MUST be patched during _on_save too (the dialog queries it to
+    # decide whether to skip the "missing key" warning).
+    with patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
+         patch("neurocad.ui.settings.save_config") as mock_save_cfg, \
          patch("neurocad.ui.settings.save_api_key") as mock_save_key:
         dialog._on_save()
 
-    # Nothing was saved
     mock_save_cfg.assert_not_called()
     mock_save_key.assert_not_called()
-    # Inline warning shown
     dialog._storage_status.setText.assert_called()
     assert "API key" in dialog._storage_status.setText.call_args.args[0]
 
 
-def test_on_save_reports_error_inline_when_all_backends_fail(qapp):
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
-         patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
+def test_on_save_empty_key_with_stored_key_saves_config_only(qapp):
+    """Sprint 5.17: if an API key is already stored for this slug, an empty
+    field should let the user update OTHER settings without re-entering the key.
+    """
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
+         patch("neurocad.ui.settings.key_storage.load_key",
+               return_value=("existing-key", "macOS Keychain")), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, api_key="sk-x")
+    _mock_ui(dialog, api_key="", tier="auto")
 
-    with patch("neurocad.ui.settings.save_config"), \
-         patch("neurocad.ui.settings.save_api_key",
-               return_value=("none", "every backend failed")), \
+    with patch("neurocad.ui.settings.key_storage.load_key",
+               return_value=("existing-key", "macOS Keychain")), \
+         patch("neurocad.ui.settings.save_config") as mock_save_cfg, \
+         patch("neurocad.ui.settings.save_api_key") as mock_save_key, \
          patch.object(dialog, "accept") as mock_accept:
         dialog._on_save()
 
-    mock_accept.assert_not_called()
-    status_html = dialog._storage_status.setText.call_args.args[0]
-    assert "Could not persist" in status_html or "backend failed" in status_html
+    mock_save_cfg.assert_called_once()
+    mock_save_key.assert_not_called()
+    mock_accept.assert_called_once()
 
 
 def test_on_use_once(qapp):
-    """_on_use_once creates adapter and stores it; no modal."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "openai:gpt-4o-mini"}), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
@@ -228,56 +204,102 @@ def test_on_use_once(qapp):
         dialog._on_use_once()
 
     mock_load.assert_called_once()
+    # Config passed to load_adapter_with_session_key has model_id, not legacy fields
+    passed_config = mock_load.call_args.args[0]
+    assert passed_config["model_id"] == "openai:gpt-4o-mini"
     assert dialog._adapter is mock_adapter
     mock_accept.assert_called_once()
 
 
-def test_load_current_shows_existing_backend(qapp):
-    """If a key is stored, _load_current displays the backend's name in the status line."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
-         patch("neurocad.ui.settings.key_storage.load_key",
-               return_value=("sk-stored", "macOS Keychain")), \
-         patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
-        dialog = SettingsDialog()
-    # After __init__, _load_current has already been called; check status has been set
-    # by re-running with mocked widgets.
-    _mock_ui(dialog, provider="openai")
-    with patch("neurocad.ui.settings.key_storage.load_key",
-               return_value=("sk-stored", "macOS Keychain")):
-        dialog._load_current()
-    status_html = dialog._storage_status.setText.call_args.args[0]
-    assert "macOS Keychain" in status_html
+def test_on_save_preserves_non_ui_config_fields(qapp):
+    """Sprint 5.18: editing config in Settings must NOT wipe fields the dialog
+    doesn't expose (audit_log_enabled, snapshot_max_chars, exec_handoff_timeout_s).
+    Regression test for the "editing shouldn't spoil config" bug.
+    """
+    loaded_config = {
+        "model_id": "deepseek:chat",
+        "timeout": 360.0,
+        "max_created_objects": 1000,
+        "audit_log_enabled": False,          # ← user customized
+        "snapshot_max_chars": 2000,          # ← user customized
+        "exec_handoff_timeout_s": 120.0,     # ← user customized
+    }
 
-
-def test_session_key_not_persisted(qapp):
-    """Using the session tier does not call save_api_key at all."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+    with patch("neurocad.ui.settings.load_config", return_value=loaded_config), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog, api_key="sk-session", tier="session")
+    _mock_ui(dialog, model_id="deepseek:chat", api_key="sk-ds", tier="auto",
+             timeout=360.0, max_objects=1000)
+    # The dialog loaded the full config into self._config
+    dialog._config = loaded_config
 
-    with patch("neurocad.ui.settings.save_api_key") as mock_save_key, \
-         patch("neurocad.ui.settings.save_config"), \
-         patch("neurocad.ui.settings.load_adapter_with_session_key",
-               return_value=MagicMock()), \
+    with patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
+         patch("neurocad.ui.settings.save_config") as mock_save, \
+         patch("neurocad.ui.settings.save_api_key",
+               return_value=("System keyring", None)), \
          patch.object(dialog, "accept"):
         dialog._on_save()
-        dialog._on_use_once()
 
-    mock_save_key.assert_not_called()
+    # The saved config MUST include the user's customized non-UI fields.
+    saved = mock_save.call_args.args[0]
+    assert saved["audit_log_enabled"] is False, "audit_log_enabled wiped on save!"
+    assert saved["snapshot_max_chars"] == 2000, "snapshot_max_chars wiped on save!"
+    assert saved["exec_handoff_timeout_s"] == 120.0, "exec_handoff_timeout_s wiped on save!"
+    # And the UI-editable fields use the values the dialog collected.
+    assert saved["model_id"] == "deepseek:chat"
+    assert saved["timeout"] == 360.0
+    assert saved["max_created_objects"] == 1000
 
 
-def test_settings_max_created_objects_default(qapp):
-    """Config without max_created_objects falls back to 1000 in the UI."""
-    with patch("neurocad.ui.settings.load_config", return_value={"provider": "openai"}), \
+def test_on_save_drops_legacy_provider_and_base_url(qapp):
+    """Sprint 5.18: legacy `provider` / `model` / `base_url` in the loaded
+    config must be dropped on save — model_id is the new source of truth.
+    """
+    loaded_config = {
+        "model_id": "openai:gpt-4o",
+        "timeout": 180.0,
+        "max_created_objects": 1000,
+        "provider": "openai",           # ← legacy, must be dropped
+        "model": "gpt-4o",              # ← legacy, must be dropped
+        "base_url": "https://x/y",      # ← legacy, must be dropped
+        "audit_log_enabled": True,
+    }
+
+    with patch("neurocad.ui.settings.load_config", return_value=loaded_config), \
          patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
          patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
         dialog = SettingsDialog()
-    _mock_ui(dialog)
-    dialog._config = {"provider": "openai"}  # no max_created_objects
-    dialog._load_current()
-    dialog._max_objects_spin.setValue.assert_called_with(1000)
+    _mock_ui(dialog, model_id="openai:gpt-4o", api_key="sk-x", tier="auto")
+    dialog._config = loaded_config
+
+    with patch("neurocad.ui.settings.key_storage.load_key", return_value=(None, None)), \
+         patch("neurocad.ui.settings.save_config") as mock_save, \
+         patch("neurocad.ui.settings.save_api_key",
+               return_value=("System keyring", None)), \
+         patch.object(dialog, "accept"):
+        dialog._on_save()
+
+    saved = mock_save.call_args.args[0]
+    assert "provider" not in saved
+    assert "model" not in saved
+    assert "base_url" not in saved
+    # Non-legacy non-UI field still present
+    assert saved["audit_log_enabled"] is True
+
+
+def test_load_current_shows_per_slug_backend(qapp):
+    """Sprint 5.17: the status line shows the backend for the MODEL's key slug."""
+    with patch("neurocad.ui.settings.load_config",
+               return_value={"model_id": "deepseek:chat"}), \
+         patch("neurocad.ui.settings.key_storage.load_key",
+               return_value=("sk-ds", "macOS Keychain")) as mock_load, \
+         patch("neurocad.ui.settings.key_storage.available_backends", return_value=[]):
+        SettingsDialog()
+
+    # load_key queried for the model's slug ("deepseek"), not "openai".
+    slugs_queried = [c.args[0] for c in mock_load.call_args_list]
+    assert "deepseek" in slugs_queried
 
 
 if __name__ == "__main__":

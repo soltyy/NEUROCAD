@@ -70,15 +70,16 @@ def test_api_key_precedence_order():
 
 
 def test_load_adapter_env_key():
-    """load_adapter() retrieves API key from environment variable."""
+    """Sprint 5.17: env var is keyed by ModelSpec.key_slug; model_id drives .model."""
     MockOpenAI = MagicMock()
     with patch.dict("os.environ", {"NEUROCAD_API_KEY_OPENAI": "env-key"}), \
          patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
-        load_adapter({"provider": "openai", "model": "test"})
+        load_adapter({"model_id": "openai:gpt-4o-mini"})
         assert MockOpenAI.call_count == 1
         call_kwargs = MockOpenAI.call_args[1]
         assert call_kwargs["api_key"] == "env-key"
-        assert call_kwargs["model"] == "test"
+        # model comes from the ModelSpec, not from raw config
+        assert call_kwargs["model"] == "gpt-4o-mini"
 
 
 def test_load_adapter_falls_back_to_key_storage():
@@ -93,17 +94,17 @@ def test_load_adapter_falls_back_to_key_storage():
 
 
 def test_load_adapter_with_session_key_skips_storage():
-    """load_adapter_with_session_key uses session key, never consults key_storage."""
+    """Sprint 5.17: session key path — never consults key_storage; ModelSpec drives model."""
     MockOpenAI = MagicMock()
     with patch("neurocad.llm.registry.key_storage.load_key") as mock_load, \
          patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
         load_adapter_with_session_key(
-            {"provider": "openai", "model": "custom"},
+            {"model_id": "openai:gpt-4o"},
             session_key="temp-key",
         )
         mock_load.assert_not_called()
         assert MockOpenAI.call_args[1]["api_key"] == "temp-key"
-        assert MockOpenAI.call_args[1]["model"] == "custom"
+        assert MockOpenAI.call_args[1]["model"] == "gpt-4o"
 
 
 def test_load_adapter_with_session_key_does_not_persist():
@@ -126,10 +127,39 @@ def test_load_adapter_no_storage_backends_raises_clear_error():
         load_adapter({"provider": "openai"})
 
 
-def test_unknown_provider():
-    """Unknown provider raises ValueError."""
-    with pytest.raises(ValueError, match="Unknown provider"):
-        load_adapter({"provider": "invalid"})
+def test_unknown_model_id_raises():
+    """Sprint 5.17: explicit unknown model_id raises ValueError (no silent fallback)."""
+    with pytest.raises(ValueError, match="Unknown model_id"):
+        load_adapter({"model_id": "totally:fake"})
+
+
+def test_legacy_config_migration_deepseek():
+    """Legacy config with DeepSeek base_url maps to the deepseek:* model."""
+    MockOpenAI = MagicMock()
+    with patch.dict("os.environ", {"NEUROCAD_API_KEY_DEEPSEEK": "ds-key"}), \
+         patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+        load_adapter({
+            "provider": "openai",
+            "model": "deepseek-reasoner",
+            "base_url": "https://api.deepseek.com/v1",
+        })
+        call_kwargs = MockOpenAI.call_args[1]
+        assert call_kwargs["api_key"] == "ds-key"
+        assert call_kwargs["model"] == "deepseek-reasoner"
+        assert call_kwargs["base_url"] == "https://api.deepseek.com/v1"
+
+
+def test_key_slug_separate_for_deepseek():
+    """DeepSeek key is under the `deepseek` slug, not `openai`, even though
+    both use the openai adapter class."""
+    MockOpenAI = MagicMock()
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("neurocad.llm.registry.key_storage.load_key",
+               side_effect=lambda slug: ("ds-key", "macOS Keychain")
+                 if slug == "deepseek" else (None, None)), \
+         patch.dict("neurocad.llm.registry.ADAPTERS", {"openai": MockOpenAI}):
+        load_adapter({"model_id": "deepseek:chat"})
+        assert MockOpenAI.call_args[1]["api_key"] == "ds-key"
 
 
 # Integration tests that require actual API keys are skipped by default

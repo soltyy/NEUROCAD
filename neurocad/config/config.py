@@ -11,7 +11,13 @@ from neurocad.config.defaults import (
 
 from neurocad.config import key_storage
 
+# Default registry ID. Lazy-imported from neurocad.llm.models to avoid a
+# circular import (models -> ... -> config).
+_DEFAULT_MODEL_ID = "openai:gpt-4o-mini"
 
+# Legacy defaults — still written to config.json for backward compatibility
+# (older versions of this code read them). New code reads `config["model_id"]`
+# and ignores these; the Settings UI no longer exposes them.
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TIMEOUT = 180.0
@@ -42,6 +48,30 @@ def _get_config_dir() -> Path:
     return Path.home() / ".freecad" / "neurocad"
 
 
+def _apply_defaults(data: dict[str, Any]) -> dict[str, Any]:
+    """Fill missing keys with sensible defaults."""
+    data.setdefault("model_id", _DEFAULT_MODEL_ID)
+    data.setdefault("timeout", DEFAULT_TIMEOUT)
+    data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
+    data.setdefault("audit_log_enabled", DEFAULT_AUDIT_LOG_ENABLED)
+    data.setdefault("snapshot_max_chars", DEFAULT_SNAPSHOT_MAX_CHARS)
+    data.setdefault("exec_handoff_timeout_s", DEFAULT_EXEC_HANDOFF_TIMEOUT_S)
+    return data
+
+
+def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
+    """One-shot migration: if config has `provider`+`model`(+`base_url`) but no
+    `model_id`, infer the registry id. Legacy fields are kept so older builds
+    of the extension can still read the file, but new code uses `model_id`."""
+    if "model_id" in data:
+        return data
+    # Lazy import — models.py cannot be imported at module level (circular).
+    from neurocad.llm import models as _models
+    spec = _models.infer_from_legacy_config(data)
+    data["model_id"] = spec.id if spec else _models.default_model_id()
+    return data
+
+
 def load() -> dict[str, Any]:
     """Load configuration from JSON file.
 
@@ -50,27 +80,12 @@ def load() -> dict[str, Any]:
     """
     config_file = _get_config_dir() / "config.json"
     if not config_file.exists():
-        return {
-            "provider": DEFAULT_PROVIDER,
-            "model": DEFAULT_MODEL,
-            "timeout": DEFAULT_TIMEOUT,
-            "max_created_objects": DEFAULT_MAX_CREATED_OBJECTS,
-            "audit_log_enabled": DEFAULT_AUDIT_LOG_ENABLED,
-            "snapshot_max_chars": DEFAULT_SNAPSHOT_MAX_CHARS,
-            "exec_handoff_timeout_s": DEFAULT_EXEC_HANDOFF_TIMEOUT_S,
-        }
+        return _apply_defaults({})
 
     with open(config_file, encoding="utf-8") as f:
         data: dict[str, Any] = json.load(f)
-    # Ensure required keys exist
-    data.setdefault("provider", DEFAULT_PROVIDER)
-    data.setdefault("model", DEFAULT_MODEL)
-    data.setdefault("timeout", DEFAULT_TIMEOUT)
-    data.setdefault("max_created_objects", DEFAULT_MAX_CREATED_OBJECTS)
-    data.setdefault("audit_log_enabled", DEFAULT_AUDIT_LOG_ENABLED)
-    data.setdefault("snapshot_max_chars", DEFAULT_SNAPSHOT_MAX_CHARS)
-    data.setdefault("exec_handoff_timeout_s", DEFAULT_EXEC_HANDOFF_TIMEOUT_S)
-    return data
+    data = _migrate_legacy(data)
+    return _apply_defaults(data)
 
 
 def save(config: dict[str, Any]):

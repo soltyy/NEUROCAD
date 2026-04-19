@@ -86,7 +86,9 @@ def _build_namespace(doc):
     import PartDesign  # type: ignore
     import Sketcher  # type: ignore
     import math  # type: ignore
+    import os as _exec_os  # used ONLY to build sandboxed helpers below
     import random  # type: ignore
+    import sys as _exec_sys
 
     # Load InvoluteGearFeature so its Python proxy class is registered.
     # Without this, doc.addObject("PartDesign::InvoluteGear", ...) produces a
@@ -95,6 +97,18 @@ def _build_namespace(doc):
         import InvoluteGearFeature  # type: ignore  # noqa: F401
     except (ImportError, Exception):
         pass
+
+    # Sprint 5.20: expose the minimum platform / file-existence surface that
+    # the 3D-text recipe (PART VII) needs, without granting access to the full
+    # `os` / `sys` modules. The sandbox still blocks `import os` / `import sys`
+    # at the tokenizer level; LLM-generated code uses these helpers instead.
+    _platform_name = _exec_sys.platform  # "darwin" | "linux" | "win32" | ...
+
+    def _file_exists(path: str) -> bool:
+        try:
+            return _exec_os.path.exists(path)
+        except Exception:
+            return False
 
     # Provide the active document as a convenience variable
     namespace = {
@@ -108,6 +122,9 @@ def _build_namespace(doc):
         "App": FreeCAD,  # alias
         "math": math,
         "random": random,
+        # Sandboxed platform helpers (see PART VII in the system prompt):
+        "platform_name": _platform_name,
+        "file_exists": _file_exists,
     }
     return namespace
 

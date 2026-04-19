@@ -93,6 +93,56 @@ def test_scroll_to_bottom_uses_scroll_area_scrollbar(qapp):
     scrollbar.setValue.assert_called_once_with(42)
 
 
+def test_range_changed_snaps_to_bottom_when_sticky(qapp):
+    """Sprint 5.19: rangeChanged is the primary autoscroll anchor.
+
+    After Qt lays out a new bubble, `rangeChanged` fires with the true new
+    maximum. Previously we raced the layout with QTimer(0) → setValue(old
+    max), which froze the scrollbar at a stale "bottom" above the fresh
+    content — the panel looked empty while the scrollbar pinned at max.
+    """
+    dock = CopilotPanel()
+    dock._stick_to_bottom = True
+    scrollbar = MagicMock()
+    dock._scroll_area = MagicMock()
+    dock._scroll_area.verticalScrollBar.return_value = scrollbar
+
+    dock._on_scroll_range_changed(0, 1234)
+
+    scrollbar.setValue.assert_called_once_with(1234)
+
+
+def test_range_changed_respects_user_scrolled_up(qapp):
+    """If the user scrolled up, autoscroll must NOT snap them back to bottom."""
+    dock = CopilotPanel()
+    dock._stick_to_bottom = False   # user is reading history
+    scrollbar = MagicMock()
+    dock._scroll_area = MagicMock()
+    dock._scroll_area.verticalScrollBar.return_value = scrollbar
+
+    dock._on_scroll_range_changed(0, 1234)
+
+    scrollbar.setValue.assert_not_called()
+
+
+def test_value_changed_re_enables_sticky_when_user_scrolls_back_to_bottom(qapp):
+    """If the user scrolls back to within 20 px of the bottom, auto-anchoring
+    resumes."""
+    dock = CopilotPanel()
+    scrollbar = MagicMock()
+    scrollbar.maximum.return_value = 1000
+    dock._scroll_area = MagicMock()
+    dock._scroll_area.verticalScrollBar.return_value = scrollbar
+
+    # User scrolled to 500 — well above the bottom
+    dock._on_scroll_value_changed(500)
+    assert dock._stick_to_bottom is False
+
+    # User scrolled back to 990 (within 20 px of max=1000)
+    dock._on_scroll_value_changed(990)
+    assert dock._stick_to_bottom is True
+
+
 def test_snapshot_requested_uses_display_limit_without_extra_trim(qapp):
     """Snapshot display should use an expanded limit and avoid a second trim."""
     dock = CopilotPanel()
@@ -254,7 +304,6 @@ def test_status_label_and_enabled_state_updates(qapp):
     dock._input = MagicMock()
     dock._send_btn = MagicMock()
     dock._snapshot_btn = MagicMock()
-    dock._export_btn = MagicMock()
 
     dock._set_busy(True)
     dock._status_label.setText.assert_called_once_with("Thinking...")
@@ -263,13 +312,11 @@ def test_status_label_and_enabled_state_updates(qapp):
     dock._send_btn.setEnabled.assert_called_once_with(True)
     dock._send_btn.setText.assert_called_once_with("■")
     dock._snapshot_btn.setEnabled.assert_called_once_with(False)
-    dock._export_btn.setEnabled.assert_called_once_with(False)
 
     dock._status_label.reset_mock()
     dock._input.reset_mock()
     dock._send_btn.reset_mock()
     dock._snapshot_btn.reset_mock()
-    dock._export_btn.reset_mock()
 
     dock._set_busy(False)
     dock._status_label.setText.assert_called_once_with("Ready")
@@ -277,7 +324,6 @@ def test_status_label_and_enabled_state_updates(qapp):
     dock._send_btn.setEnabled.assert_called_once_with(True)
     dock._send_btn.setText.assert_called_once_with("→")
     dock._snapshot_btn.setEnabled.assert_called_once_with(True)
-    dock._export_btn.setEnabled.assert_called_once_with(True)
 
 
 def test_on_attempt_updates_status_label(qapp):
@@ -288,37 +334,6 @@ def test_on_attempt_updates_status_label(qapp):
     dock._on_attempt(2, 5)
     dock._status_label.setText.assert_called_once_with("Attempt 2 of 5")
     dock._add_message.assert_called_once_with("feedback", "Retrying")
-
-
-def test_export_button_triggers_handler(qapp):
-    """Export button click calls _on_export_requested."""
-    dock = CopilotPanel()
-    # Ensure button exists
-    assert dock._export_btn is not None
-    # Ensure handler is callable (connection verified via _connect_signals)
-    assert callable(dock._on_export_requested)
-
-
-def test_on_export_requested_with_last_new_objects(qapp):
-    """_on_export_requested uses last_new_objects and calls exporter."""
-    dock = CopilotPanel()
-    dock._last_new_objects = ["Box", "Cylinder"]
-    dock._add_message = MagicMock()
-    mock_doc = MagicMock()
-    with patch("neurocad.core.active_document.get_active_document", return_value=mock_doc), \
-         patch("neurocad.ui.panel.QtWidgets.QFileDialog.getSaveFileName",
-               return_value=("/tmp/test.step", "STEP (*.step *.stp)")) as _, \
-         patch("neurocad.core.exporter.export_last_successful") as mock_export:
-        dock._on_export_requested()
-        # Should call export_last_successful with correct args
-        mock_export.assert_called_once_with(
-            mock_doc, Path("/tmp/test.step"), "step", ["Box", "Cylinder"]
-        )
-        # Should show feedback message
-        dock._add_message.assert_called_once_with(
-            "feedback",
-            "Exported 2 object(s) to test.step"
-        )
 
 
 def test_last_new_objects_updated_on_worker_done(qapp):
@@ -387,12 +402,9 @@ def test_variant_b_visual_semantics(qapp):
     assert dock._send_btn.text() == "→"
     # Snapshot button text is Snapshot (not Show Snapshot)
     assert dock._snapshot_btn.text() == "Snapshot"
-    # Export button text unchanged
-    assert dock._export_btn.text() == "Export"
 
     # Secondary buttons have fixed height 24px
     assert dock._snapshot_btn.minimumHeight() == 24
-    assert dock._export_btn.minimumHeight() == 24
     # Secondary buttons have secondary style tokens
     snapshot_style = dock._snapshot_btn.styleSheet()
     assert "background: #f9fafb" in snapshot_style

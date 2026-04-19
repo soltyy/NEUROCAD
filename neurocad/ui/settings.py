@@ -1,21 +1,27 @@
-"""Settings dialog for provider selection and API key management.
+"""Settings dialog — Sprint 5.17: single Model dropdown + per-slug API key status.
 
-Sprint 5.15 — tiered cross-platform key storage:
-  • Radio-button storage choice (Automatic / Plaintext file / Session only).
-  • Inline status label showing which backend was actually used on save.
-  • No more alarming modal dialogs on every save.
+The user picks a concrete LLM by display name ("DeepSeek Chat", "Claude 3.5
+Sonnet", …). Provider/adapter, base URL, and key_storage slug are looked up
+from `neurocad.llm.models.MODELS`. The API key is stored under the model's
+`key_slug` (so DeepSeek key ≠ OpenAI key even when both use the openai
+adapter class).
+
+Tiered storage (Sprint 5.15) is preserved — three radio buttons:
+Automatic / Plaintext file / Session only. Inline status line replaces the
+old alarming modal.
 """
 
 from ..config import key_storage
 from ..config.config import load as load_config
 from ..config.config import save as save_config
 from ..config.config import save_api_key
+from ..llm import models as model_registry
 from ..llm.registry import load_adapter_with_session_key
 from .compat import Qt, QtWidgets
 
 
 class SettingsDialog(QtWidgets.QDialog):
-    """Dialog to configure LLM provider and API key."""
+    """Dialog to configure the active LLM model and its API key."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -26,34 +32,31 @@ class SettingsDialog(QtWidgets.QDialog):
         self._connect_signals()
         self._load_current()
 
+    # --- UI -----------------------------------------------------------
+
     def _build_ui(self):
-        """Create UI elements."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        # Provider
-        provider_layout = QtWidgets.QHBoxLayout()
-        provider_layout.addWidget(QtWidgets.QLabel("Provider:"))
-        self._provider_combo = QtWidgets.QComboBox()
-        self._provider_combo.addItems(["openai", "anthropic"])
-        provider_layout.addWidget(self._provider_combo, 1)
-        layout.addLayout(provider_layout)
-
-        # Model
+        # Model dropdown (replaces old provider / model / base_url triple).
         model_layout = QtWidgets.QHBoxLayout()
         model_layout.addWidget(QtWidgets.QLabel("Model:"))
-        self._model_edit = QtWidgets.QLineEdit()
-        model_layout.addWidget(self._model_edit, 1)
+        self._model_combo = QtWidgets.QComboBox()
+        for spec in model_registry.list_models():
+            # userData stores the registry id; display text shows the name + hint.
+            label = f"{spec.display_name}"
+            if spec.notes:
+                label += f"  —  {spec.notes}"
+            self._model_combo.addItem(label, userData=spec.id)
+        model_layout.addWidget(self._model_combo, 1)
         layout.addLayout(model_layout)
 
-        # Base URL (optional)
-        url_layout = QtWidgets.QHBoxLayout()
-        url_layout.addWidget(QtWidgets.QLabel("Base URL (optional):"))
-        self._base_url_edit = QtWidgets.QLineEdit()
-        self._base_url_edit.setPlaceholderText("https://api.openai.com/v1")
-        url_layout.addWidget(self._base_url_edit, 1)
-        layout.addLayout(url_layout)
+        # Per-model info label: adapter / base URL / context window / file handling
+        self._model_info = QtWidgets.QLabel("")
+        self._model_info.setWordWrap(True)
+        self._model_info.setStyleSheet("color: #666; padding: 2px 4px; font-size: 9pt;")
+        layout.addWidget(self._model_info)
 
         # Timeout
         timeout_layout = QtWidgets.QHBoxLayout()
@@ -88,22 +91,20 @@ class SettingsDialog(QtWidgets.QDialog):
         key_layout.addWidget(self._api_key_edit, 1)
         auth_layout.addLayout(key_layout)
 
-        # Storage tier — radio buttons
+        # Storage tier radio
         self._tier_group = QtWidgets.QButtonGroup(self)
         self._tier_auto = QtWidgets.QRadioButton("Automatic (recommended)")
         self._tier_auto.setToolTip(
             "Use the most secure backend available on this OS: "
-            "Python keyring → macOS Keychain → Linux secret-tool → "
-            "plaintext file. Falls through automatically."
+            "Python keyring → macOS Keychain → Linux secret-tool → plaintext file."
         )
         self._tier_plaintext = QtWidgets.QRadioButton("Plaintext file (owner-only)")
         self._tier_plaintext.setToolTip(
-            "Store as JSON file in the config dir, chmod 0600 (readable only by "
-            "your user). Works on every platform without extra packages."
+            "JSON file in config dir, chmod 0600. Works on every platform, no pip deps."
         )
         self._tier_session = QtWidgets.QRadioButton("Session only (do not save)")
         self._tier_session.setToolTip(
-            "Use the key for this FreeCAD session only. Key is not written anywhere."
+            "Use the key for this FreeCAD session only. Not written to disk."
         )
         self._tier_group.addButton(self._tier_auto, 0)
         self._tier_group.addButton(self._tier_plaintext, 1)
@@ -111,16 +112,16 @@ class SettingsDialog(QtWidgets.QDialog):
         self._tier_auto.setChecked(True)
 
         tier_box = QtWidgets.QVBoxLayout()
-        tier_label = QtWidgets.QLabel("Storage:")
-        tier_box.addWidget(tier_label)
+        tier_box.addWidget(QtWidgets.QLabel("Storage:"))
         tier_box.addWidget(self._tier_auto)
         tier_box.addWidget(self._tier_plaintext)
         tier_box.addWidget(self._tier_session)
         auth_layout.addLayout(tier_box)
 
-        # Inline status — where the key IS / WAS stored. Replaces the modal.
+        # Inline status — replaces the old alarming modal.
         self._storage_status = QtWidgets.QLabel("")
         self._storage_status.setWordWrap(True)
+        self._storage_status.setTextFormat(Qt.RichText)
         self._storage_status.setStyleSheet("padding: 4px; font-size: 10pt;")
         auth_layout.addWidget(self._storage_status)
 
@@ -145,83 +146,110 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addLayout(button_layout)
 
     def _connect_signals(self):
-        """Connect UI signals."""
         self._save_btn.clicked.connect(self._on_save)
         self._use_once_btn.clicked.connect(self._on_use_once)
         self._cancel_btn.clicked.connect(self.reject)
-        self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        self._model_combo.currentIndexChanged.connect(self._on_model_changed)
+
+    # --- state --------------------------------------------------------
+
+    def _current_spec(self) -> model_registry.ModelSpec | None:
+        mid = self._model_combo.currentData()
+        return model_registry.get_model(mid) if mid else None
 
     def _available_backends_summary(self) -> str:
         names = [b.name for b in key_storage.available_backends()]
         return " → ".join(names) if names else "none"
 
     def _load_current(self):
-        """Load current config into UI and show current key-storage status."""
-        self._provider_combo.setCurrentText(self._config.get("provider", "openai"))
-        self._model_edit.setText(self._config.get("model", "gpt-4o-mini"))
-        self._base_url_edit.setText(self._config.get("base_url", ""))
+        """Populate UI from config and show per-model key-storage status."""
         self._timeout_spin.setValue(float(self._config.get("timeout", 180.0)))
         self._max_objects_spin.setValue(int(self._config.get("max_created_objects", 1000)))
-        # API key field is always empty on load — we never echo stored keys.
+
+        # Pick active model: explicit model_id → legacy inference → default.
+        mid = self._config.get("model_id") or model_registry.default_model_id()
+        spec = model_registry.get_model(mid)
+        if spec is None:
+            spec = model_registry.infer_from_legacy_config(self._config)
+        if spec is None:
+            spec = model_registry.get_model(model_registry.default_model_id())
+        assert spec is not None
+        idx = self._model_combo.findData(spec.id)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+
         self._api_key_edit.clear()
+        self._refresh_model_info(spec)
+        self._refresh_storage_status(spec)
 
-        # Neutral informational status before any save.
-        _key, backend = key_storage.load_key(self._config.get("provider", "openai"))
+    def _on_model_changed(self, _index: int):
+        spec = self._current_spec()
+        if spec is None:
+            return
+        self._refresh_model_info(spec)
+        self._refresh_storage_status(spec)
+
+    def _refresh_model_info(self, spec: model_registry.ModelSpec):
+        base = spec.base_url or "(provider default)"
+        fh = spec.file_handling
+        self._model_info.setText(
+            f"Adapter: {spec.adapter}  ·  Base URL: {base}  ·  "
+            f"Context: {spec.context_window:,} tokens  ·  Files: {fh}  ·  "
+            f"Key slug: {spec.key_slug}"
+        )
+
+    def _refresh_storage_status(self, spec: model_registry.ModelSpec):
+        stored_key, backend = key_storage.load_key(spec.key_slug)
         if backend:
             self._set_status(
-                f"🔑 Key currently stored in: <b>{backend}</b>. "
-                f"Leave the field blank to keep it, or enter a new key to replace it.",
+                f"🔑 Key for <b>{spec.key_slug}</b> currently stored in: "
+                f"<b>{backend}</b>. Leave the field blank to keep it, or "
+                f"enter a new key to replace it.",
                 "#0b8",
             )
         else:
             self._set_status(
-                f"No saved key for this provider. "
-                f"Available storage tiers: {self._available_backends_summary()}.",
-                "#888",
-            )
-
-    def _on_provider_changed(self, provider):
-        """Update model placeholder based on provider and refresh status line."""
-        if provider == "openai":
-            self._model_edit.setPlaceholderText("gpt-4o-mini")
-        elif provider == "anthropic":
-            self._model_edit.setPlaceholderText("claude-3-haiku-20240307")
-        else:
-            self._model_edit.setPlaceholderText("")
-
-        _key, backend = key_storage.load_key(provider)
-        if backend:
-            self._set_status(
-                f"🔑 Key for <b>{provider}</b> currently stored in: <b>{backend}</b>.",
-                "#0b8",
-            )
-        else:
-            self._set_status(
-                f"No saved key for <b>{provider}</b>. "
+                f"No saved key for <b>{spec.key_slug}</b>. "
                 f"Available storage tiers: {self._available_backends_summary()}.",
                 "#888",
             )
 
     def _set_status(self, html: str, color: str = "#666") -> None:
-        self._storage_status.setTextFormat(Qt.RichText)
         self._storage_status.setText(html)
         self._storage_status.setStyleSheet(f"color: {color}; padding: 4px; font-size: 10pt;")
 
-    def _collect_config(self) -> tuple[dict, str]:
-        """Return config dict and API key from UI."""
-        provider = self._provider_combo.currentText().strip()
-        model = self._model_edit.text().strip()
-        base_url = self._base_url_edit.text().strip()
+    # --- submit -------------------------------------------------------
+
+    # Legacy fields replaced by `model_id` in Sprint 5.17; drop them on save
+    # so a freshly-written config doesn't carry conflicting provider/model/
+    # base_url triples from an old migration.
+    _LEGACY_FIELDS_TO_DROP: frozenset[str] = frozenset({"provider", "model", "base_url"})
+
+    def _collect_config(self) -> tuple[dict, str, model_registry.ModelSpec | None]:
+        """Build the full config to save.
+
+        Sprint 5.18 fix: merge UI-editable fields into the loaded config
+        (`self._config`) instead of replacing it. Previously, fields not
+        exposed in the dialog (`audit_log_enabled`, `snapshot_max_chars`,
+        `exec_handoff_timeout_s`) were silently wiped on Save — "editing
+        the config must not spoil it".
+        """
+        spec = self._current_spec()
         timeout = float(self._timeout_spin.value())
         max_objects = self._max_objects_spin.value()
         api_key = self._api_key_edit.text().strip()
 
-        config = {"provider": provider, "timeout": timeout, "max_created_objects": max_objects}
-        if model:
-            config["model"] = model
-        if base_url:
-            config["base_url"] = base_url
-        return config, api_key
+        # Start from the loaded config so non-UI fields are preserved.
+        merged: dict = {
+            k: v for k, v in self._config.items()
+            if k not in self._LEGACY_FIELDS_TO_DROP and k != "api_key"
+        }
+        # Overlay the fields the user can edit in the dialog.
+        merged["model_id"] = spec.id if spec else model_registry.default_model_id()
+        merged["timeout"] = timeout
+        merged["max_created_objects"] = max_objects
+
+        return merged, api_key, spec
 
     def _selected_tier(self) -> str:
         if self._tier_plaintext.isChecked():
@@ -231,25 +259,42 @@ class SettingsDialog(QtWidgets.QDialog):
         return key_storage.TIER_AUTOMATIC
 
     def _on_save(self):
-        """Save config and API key using the selected storage tier.
+        config, api_key, spec = self._collect_config()
+        if spec is None:
+            self._set_status("⚠️ No model selected.", "#e67e22")
+            return
 
-        Reports the outcome inline (no modal) unless there is nothing to save.
-        """
-        config, api_key = self._collect_config()
         tier = self._selected_tier()
 
         if not api_key:
-            self._set_status("⚠️ Please enter an API key before saving.", "#e67e22")
+            # Maybe a key is already stored; user just wants to save non-key
+            # settings. Accept if a key exists for this slug, otherwise warn.
+            existing_key, _backend = key_storage.load_key(spec.key_slug)
+            if not existing_key and tier != key_storage.TIER_SESSION:
+                self._set_status(
+                    "⚠️ Please enter an API key before saving.", "#e67e22",
+                )
+                return
+            # Save only the non-key config and close.
+            try:
+                save_config(config)
+            except Exception as e:
+                self._set_status(f"❌ Could not save configuration: {e}", "#c0392b")
+                return
+            self._set_status(
+                "🔑 Settings saved. Existing API key retained.", "#0b8",
+            )
+            self.accept()
             return
 
-        # Save config (never includes api_key).
+        # Save the non-key config first.
         try:
             save_config(config)
         except Exception as e:
             self._set_status(f"❌ Could not save configuration: {e}", "#c0392b")
             return
 
-        # "Session only" tier — build an adapter now, do NOT persist the key.
+        # Session-only tier — do not persist the key; build adapter now.
         if tier == key_storage.TIER_SESSION:
             try:
                 adapter = load_adapter_with_session_key(config, api_key)
@@ -258,15 +303,13 @@ class SettingsDialog(QtWidgets.QDialog):
                 return
             self._adapter = adapter
             self._set_status(
-                "🔑 Settings saved. Key kept in <b>session memory only</b> — "
-                "you will need to provide it again next time.",
+                "🔑 Settings saved. Key kept in <b>session memory only</b>.",
                 "#0b8",
             )
             self.accept()
             return
 
-        # Automatic / Plaintext — persist via key_storage.
-        backend_name, err = save_api_key(config["provider"], api_key, tier=tier)
+        backend_name, err = save_api_key(spec.key_slug, api_key, tier=tier)
         if err:
             self._set_status(
                 f"❌ Could not persist the key: {err}. Try a different storage tier.",
@@ -277,20 +320,23 @@ class SettingsDialog(QtWidgets.QDialog):
         self._adapter = None
         if "Plaintext" in backend_name:
             self._set_status(
-                f"🔑 Settings saved. Key persisted to <b>{backend_name}</b> — "
-                f"file is readable only by your OS user.",
+                f"🔑 Settings saved. Key for <b>{spec.key_slug}</b> persisted to "
+                f"<b>{backend_name}</b> — file readable only by your OS user.",
                 "#e67e22",
             )
         else:
             self._set_status(
-                f"🔑 Settings saved. Key persisted to <b>{backend_name}</b>.",
+                f"🔑 Settings saved. Key for <b>{spec.key_slug}</b> persisted to "
+                f"<b>{backend_name}</b>.",
                 "#0b8",
             )
         self.accept()
 
     def _on_use_once(self):
-        """Shortcut for the Session-only tier — build adapter without persisting."""
-        config, api_key = self._collect_config()
+        config, api_key, spec = self._collect_config()
+        if spec is None:
+            self._set_status("⚠️ No model selected.", "#e67e22")
+            return
         if not api_key:
             self._set_status("⚠️ Please enter an API key for this session.", "#e67e22")
             return
@@ -303,12 +349,12 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self._adapter = adapter
         self._set_status(
-            f"🔑 Temporary adapter for <b>{config['provider']}</b> ready. "
+            f"🔑 Temporary adapter for <b>{spec.display_name}</b> ready. "
             f"Key is not saved.",
             "#0b8",
         )
         self.accept()
 
     def get_adapter(self):
-        """Return adapter created via Use once / Session only (or None if Save path)."""
+        """Return the adapter built via Use once / Session only (or None for Save path)."""
         return self._adapter
