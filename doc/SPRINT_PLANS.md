@@ -1,4 +1,4 @@
-# NeuroCad · Sprint Plans v2.2
+# NeuroCad · Sprint Plans v2.4
 **Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 > **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
@@ -42,6 +42,8 @@
 - [Sprint 5.18 — Truncation Detection + max_tokens Bump + Quantity Anti-Pattern + Export Button Removal](#sprint-518--truncation-detection--max_tokens-bump--quantity-anti-pattern--export-button-removal)
 - [Sprint 5.19 — Autoscroll Anchor Fix (verticalScrollBar.rangeChanged)](#sprint-519--autoscroll-anchor-fix-verticalscrollbarrangechanged)
 - [Sprint 5.20 — 3D Text Recipe + NameError "Forgot to Fetch" + ViewObject Attribute Feedback](#sprint-520--3d-text-recipe--nameerror-forgot-to-fetch--viewobject-attribute-feedback)
+- [Sprint 5.21 — Audit Log Processing-State Lifecycle](#sprint-521--audit-log-processing-state-lifecycle)
+- [Sprint 5.22 — Headless Dog-Food Harness + Open Punch-List Closure (5 feedback branches)](#sprint-522--headless-dog-food-harness--open-punch-list-closure-5-feedback-branches)
 - [Сводная таблица: что изменилось от v0.1 → v2.2](#сводная-таблица-что-изменилось-от-v01--v22)
 
 ---
@@ -1270,6 +1272,74 @@ Tiered кросс-платформенное хранилище API-ключа, 
 
 ---
 
+# Sprint 5.21 — Audit Log Processing-State Lifecycle
+**Нед. 18 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑04‑18)
+
+**Предусловие:** Пользовательский запрос — добавить в audit log поле, отражающее, обработана ли запись. Жизненный цикл: «новая → проведён анализ → требует обработки → проведена обработка / завершено без обработки». Все 815 существующих записей надо классифицировать ретроспективно, чтобы понять, какие dog-food-сбои уже закрыты sprint-фиксами, а какие открыты как технический долг.
+
+«Что НЕ меняется (по девизу)» — schema audit log остаётся **append-only по поведению**; единственное изменение — новое поле `processing_state` со значением `"new"` для каждой новой записи. Старые записи мигрируются один раз, поле проставляется по классификации.
+
+## Цель
+
+1. **Schema extension** в `neurocad/core/audit.py` — поле `processing_state` на каждой записи, default `"new"`. Четыре валидных значения: `new`, `analyzed_needs_action`, `analyzed_done`, `processed`.
+2. **`update_processing_state(log_path, new_state, **filters)`** в audit.py — атомарный rewrite через `tmp + os.replace`, фильтры по timestamp / correlation_id / event_type. Никогда не повреждает существующий лог (no-degradation).
+3. **`scripts/audit_state.py`** CLI с тремя суб-командами:
+   - `migrate` — добавить `processing_state` к старым записям, авто-классификация по rule-таблице («какой sprint адресовал этот error pattern»). Идемпотентно: уже-классифицированные записи не downgrade'аются.
+   - `stats` — распределение по состояниям и event_type'ам, плюс первые 10 примеров `analyzed_needs_action` (открытый punch list).
+   - `mark` — ручная установка состояния по `--ts` / `--cid` / `--event` фильтрам.
+4. **Classification rules** — 25+ паттернов error string → (state, sprint annotation). Особенности: `max_retries_exhausted` уточняется по `last_error` (если внутри известный pattern → processed, иначе → needs_action).
+5. **Real-log migration**: 815 записей классифицированы → 145 `processed` (известные sprint-fixes), 658 `analyzed_done` (success/start/positive attempt), 12 `analyzed_needs_action` (открытый punch list).
+
+**Non-goals:** rewriting old audit lines as live changes (миграция — однократная операция); persistence в DB; UI-индикатор processing_state в панели (отдельный отчёт через CLI).
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-CORE-037A / Developer / audit.py: processing_state="new" в каждой новой записи + update_processing_state helper / planned
+2. NC-DEV-OPS-037B  / Developer / scripts/audit_state.py с классификатором + CLI (migrate / stats / mark)               / planned
+3. NC-DEV-TEST-037C / Developer / 11 новых тестов для audit lifecycle + classifier rules                                / planned
+4. NC-DEV-OPS-037D  / Operator  / Запустить migrate на проде (815 записей) — однократно                                  / planned
+5. NC-DEV-DOC-021   / Developer / Sprint 5.21 + RELEASE_NOTES v2.3                                                       / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-CORE-037A** | Developer | 1 | `audit.py` — processing_state на каждой записи + update helper | `neurocad/core/audit.py`, `tests/test_audit.py` | Module-level константы `PROCESSING_STATE_NEW / _ANALYZED_NEEDS_ACTION / _ANALYZED_DONE / _PROCESSED`; `audit_log()` добавляет `"processing_state": "new"` в каждый entry; `update_processing_state(log_path, new_state, *, timestamp, correlation_id, event_type)` — atomic tmp + os.replace; existing schema test обновлён под 5 expected top-level keys | `TASK CODE: NC-DEV-CORE-037A` / Schema docstring расширен описанием lifecycle. update_processing_state валидирует state против `_VALID_PROCESSING_STATES`, raises ValueError если invalid. Никогда не повреждает существующий файл — пишет через tmp + os.replace. |
+| **NC-DEV-OPS-037B** | Developer | 1 | `scripts/audit_state.py` — классификатор + CLI | `scripts/audit_state.py` (новый) | Три суб-команды (migrate / stats / mark); `_ERROR_PATTERN_RULES` tuple из 27 правил (touched/invalid, shape is null/invalid, list index, handoff timeout, LinearPattern, NameError, Quantity, viewprovider FontSize, syntax error, tokenization error, range arg 3, cancelled, no code generated etc.); `_ERROR_TYPE_RULES` dict с 7 ключами (cancelled_by_user, handoff_timeout, max_retries_exhausted etc.); `_POSITIVE_EVENT_TYPES = {agent_start, agent_success}`; `classify()` возвращает (state, reason); migrate respects already-classified entries (no downgrade) | `TASK CODE: NC-DEV-OPS-037B` / Rules ordered: first match wins. max_retries_exhausted уточняется по last_error через тот же ERROR_PATTERN_RULES walk. Migrate: idempotent — записи с existing state ≠ "new" пропускаются (no degradation). |
+| **NC-DEV-TEST-037C** | Developer | 2 | 11 новых тестов | `tests/test_audit.py` | 4 теста для `update_processing_state` (by_timestamp / invalid_state / by_correlation_id / missing_file); 7 тестов классификатора (positive_events → analyzed_done, attempt ok → analyzed_done, addressed_pattern → processed, unknown → needs_action, cancelled_by_user → processed, max_retries_exhausted refined by last_error, range() arg 3 zero → needs_action); `test_audit_log_jsonl_schema` обновлён | `TASK CODE: NC-DEV-TEST-037C` / Loader классификатора через importlib.util.spec_from_file_location (scripts/ — не пакет). |
+| **NC-DEV-OPS-037D** | Operator | 3 | Запуск migrate на проде | `~/Library/Application Support/FreeCAD/v1-1/neurocad/logs/llm-audit.jsonl` | 815 записей классифицированы; 145 → processed, 658 → analyzed_done, 12 → analyzed_needs_action; old file перезаписан атомарно через tmp + os.replace | `TASK CODE: NC-DEV-OPS-037D` / Сначала `--dry-run`, потом real run. Backup опционален (логи и без того ротируются). |
+| **NC-DEV-DOC-021** | Developer | 4 | Sprint 5.21 + RELEASE_NOTES v2.3 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.21 в каноническом формате; версия 2.2 → 2.3; в RELEASE_NOTES — список 12 открытых punch-list записей с предложениями куда направить в Sprint 5.22 | — |
+
+### Что НЕ менялось (по девизу)
+- Schema audit log **append-only** в поведении: запись пишется один раз, `update_processing_state` это отдельная редко-используемая operation, не часть hot path.
+- `correlation_id` / `timestamp` / `event_type` / `data` — все top-level поля остались.
+- `_sanitize_payload` контракт неизменен: redaction секретов, capping preview-полей, ограничение nested dicts.
+- Все 4 backend'а key_storage (Sprint 5.15) работают как раньше.
+- 282 теста до Sprint 5.21 продолжают проходить.
+
+**Правила останова Sprint 5.21:** перезапись `data.error` или `data.error_category` на existing entries → rejected (только `processing_state` mutable) / удаление старых полей `correlation_id`/`timestamp` ради «упрощения» → rejected / migrate не атомарный (write-in-place) → rejected (risk of half-corrupted log) / classification rule, который downgrade-ит уже-`processed` запись обратно → rejected / ответ без TASK CODE = невалиден.
+
+### Open punch-list (Sprint 5.22 candidates from migrate output)
+
+12 записей с `analyzed_needs_action` — реальный технический долг, всплывший после классификации:
+1. `'Part.Face' object has no attribute 'makePipeShell'` — wire/Face confusion, не покрыто feedback'ом
+2. `'Part.Wire' object has no attribute 'transform'` — должно быть transformShape/transformed
+3. `LLM request timed out after 120s` — старая запись, Sprint 5.4 поднял default, но pattern не processed
+4. `adapter_init_failure` (2×) — нет API key, by-design но имеет смысл classify как processed
+5. `Either three floats, tuple or Vector expected` — Vector constructor, новая variation
+6. `Cannot create polygon because less than two vertices are given` — Sprint 5.14 wireframe partial
+7. `range() arg 3 must not be zero` — обсуждали, фидбэка нет
+8. `Failed to create face from wire` — open wire self-intersection
+9. (etc.)
+
+Эти 12 — кандидаты для Sprint 5.22 (новые `_make_feedback` ветки или прямые правки в defaults.py).
+
+---
+
 ### Post-merge hotfix (same sprint): config-wipe on Save
 
 После закрытия 5.18 — пользовательское наблюдение «исправляя конфиг нельзя испортить его». Воспроизведение: Settings `_collect_config` возвращал только 3 UI-поля (`model_id`, `timeout`, `max_created_objects`); `save()` писал ТОЛЬКО их; остальные custom-значения (`audit_log_enabled=False`, `snapshot_max_chars=2000`, `exec_handoff_timeout_s=120`) стирались с диска. На следующий `load()` `_apply_defaults` заполнял их DEFAULT'ами — пользовательские настройки терялись молча.
@@ -1283,6 +1353,110 @@ Tiered кросс-платформенное хранилище API-ключа, 
 **Deferred (not in this sprint):**
 - Блокировка `ViewObject` в executor — низкий приоритет, ViewObject не опасен; добавить лишь warning что в headless-контексте modification не persist.
 - Audit field `failed_block_idx` уже добавлен в Sprint 5.13 — можно прогнать статистику за сутки после следующего dog-food, чтобы количественно подтвердить снижение naming drift.
+
+---
+
+# Sprint 5.22 — Headless Dog-Food Harness + Open Punch-List Closure (5 feedback branches)
+**Нед. 19 · Python 3.11 · FreeCAD 1.1**
+**Статус:** completed (2026‑05‑11)
+
+**Предусловие:** Пользовательский запрос «можешь сам тестировать во FreeCAD без моего участия?» — ручные dog-food-проходы дороги и завязаны на пользователя. Параллельно Sprint 5.21 классифицировал 815 audit-записей и оставил 12 в `analyzed_needs_action`. Нужна автономная инфраструктура регрессионного теста + закрытие открытого punch-list.
+
+«Что НЕ меняется (по девизу)» — production runtime неизменен: `agent.run`, `executor.execute`, `worker._request_exec`, threading модель, sandbox tokenizer, system prompt в `defaults.py`. Только additive: новые feedback-ветки + новый CLI-инструмент `scripts/headless_dogfood.py` + расширение classifier rules. Существующие 293 теста проходят без изменений (только один тест range-step переписан под новое ожидание `processed`).
+
+## Цель
+
+1. **`scripts/headless_dogfood.py`** — 2-process bridge harness: driver (venv python с anthropic/openai SDK, agent.run, History) ↔ worker (`freecadcmd` subprocess с реальным FreeCAD 1.1 + `executor.execute`). JSON-Lines RPC через stdin/stdout. Сценарии описывают prompt + success-check, агент исполняет полный loop (LLM → код → exec → validate), harness инспектирует FreeCAD-документ и выдаёт PASS/FAIL.
+2. **5 новых `_make_feedback` веток** в `agent.py` для оставшихся открытых паттернов: `Cannot create polygon (too few vertices)`, `range() arg 3 must not be zero`, `Failed to create face from wire`, `unsupported format string passed to Base.Quantity.__format__`, `Either three floats … Vector expected`.
+3. **Audit classifier расширен** в `scripts/audit_state.py`: +8 паттернов в `_ERROR_PATTERN_RULES` (5 новых + 3 уже-покрытых старыми спринтами), +1 event-type rule (`adapter_init_failure` → processed), routing для не-`agent_*` event types, новый флаг `--reclassify` (promotion-only).
+4. **Re-migration на проде**: 12 `analyzed_needs_action` → 12 `processed`. После — `analyzed_needs_action == 0` в production audit log.
+5. **Регрессионная проверка** — 293 → 300 тестов, полный pytest зелёный; harness прогон 3/3 сценариев (R4 куб, R1 болт M24, ATLAS 3D-text по орбите) на DeepSeek `attempts=1` каждый, итого ~24 с / батч.
+
+**Non-goals:** новых рецептов в `defaults.py` (рецепты Sprint 5.7–5.20 уже покрывают все 12 пунктов; добавляются только feedback-хинты на случай regression); CI-интеграция harness (требует secrets management — отдельный спринт); UI-индикатор processing_state в панели; полная замена ручного dog-food (harness покрывает геометрические сценарии, но не interactive UX — Stop button / autoscroll / Settings dialog требуют живого Qt).
+
+**Rolling Plan (старт)**
+```
+1. NC-DEV-OPS-038A   / Developer / scripts/headless_dogfood.py — 2-process bridge (worker mode + driver mode)        / planned
+2. NC-DEV-CORE-038B  / Developer / agent._make_feedback: 5 новых веток (polygon, range-step, face-from-wire,           / planned
+                                    Quantity __format__, Vector 3D)
+3. NC-DEV-OPS-038C   / Developer / audit_state.py — 8 новых правил + adapter_init_failure type + --reclassify flag    / planned
+4. NC-DEV-TEST-038D  / Developer / 5 feedback тестов + 2 classifier теста + переписан range-step test                   / planned
+5. NC-DEV-OPS-038E   / Operator  / audit_state.py migrate --reclassify на проде                                        / planned
+6. NC-DEV-DOC-022    / Developer / Sprint 5.22 + RELEASE_NOTES + sprint plans v2.3 → v2.4                              / planned
+```
+
+---
+
+## Задачи
+
+| Task Code | Роль | Фаза | Задача | Артефакт | Acceptance | Промт |
+|---|---|---|---|---|---|---|
+| **NC-DEV-OPS-038A** | Developer | 1 | `scripts/headless_dogfood.py` — autonomous end-to-end harness | `scripts/headless_dogfood.py` (новый) | Single-file, две роли через env-флаг `NEUROCAD_DOGFOOD_WORKER=1`: driver (venv) spawn'ит worker (`freecadcmd`); worker отвечает на JSON-Lines RPC (`exec`/`reset`/`inspect`/`quit`) через `sys.__stdin__`/`sys.__stdout__` (FreeCAD редиректит обычный `stdout` в свой console widget); driver читает `model_id` из production `~/Library/Application Support/FreeCAD/v1-1/neurocad/config.json`, ключ через `key_storage.load_key(spec.key_slug)` + env-override; `AgentCallbacks.on_exec_needed` — синхронный round-trip к worker'у; `--scenario all/R4/R1/ATLAS`, `--list`, `--worker-stderr <path>`; success-check на основе `inspect.objects[*].volume / isValid` (не name-substring — толерантно к расхождению имён LLM) | `TASK CODE: NC-DEV-OPS-038A` / Worker mode НЕ guarded `__name__ == "__main__"` — freecadcmd импортирует скрипт как модуль; gate по env-флагу. Driver НЕ должен зависеть от FreeCAD-модулей (только agent.run + LLM SDK + key_storage). JSON-RPC синхронный, по одной строке: `{"cmd":"exec","code":...}` → `{"event":"exec_result","ok":true,...}`. |
+| **NC-DEV-CORE-038B** | Developer | 1 | 5 новых runtime-feedback веток в `agent._make_feedback` | `neurocad/core/agent.py` | Все 5 новых веток в runtime-секции (после `must be bool, not int`, перед fallback `Execution failed: {error}`): polygon-vertex guard, range step ≠ 0 defensive pattern, face-from-wire isClosed/isValid/planar checklist, Quantity `.Value` anti-pattern, Vector 3D `coord[:3]` projection. Каждая ветка возвращает не дольше 6 строк, ссылается на конкретный API/recipe в системном промпте. | `TASK CODE: NC-DEV-CORE-038B` / Только additive — никаких изменений в существующих ветках (devisaproof). Не менять category routing в `_categorize_error`. Стиль текста идентичен Sprint 5.6/5.16 (короткое объяснение + WRONG/RIGHT + ссылка на PART recipe). |
+| **NC-DEV-OPS-038C** | Developer | 1 | Classifier rules + routing + `--reclassify` flag | `scripts/audit_state.py` | `_ERROR_PATTERN_RULES`: +8 needles (`range() arg 3 must not be zero` → 5.22 processed; `cannot create polygon` → 5.22; `failed to create face from wire` → 5.22; `unsupported format string passed to base.quantity` + `quantity.__format__` → 5.22; `either three floats` → 5.14/5.22; `has no attribute 'makepipeshell'` → 5.11; `has no attribute 'transform'` → 5.16; `llm request timed out` → 5.6/5.18 by-design). `_ERROR_TYPE_RULES`: `+adapter_init_failure → processed (by-design, Settings dialog)`. Routing: для не-`agent_attempt`/`agent_error` событий проверяется `_ERROR_TYPE_RULES[ev]` (раньше fall-through на `unknown event_type`). `--reclassify` flag: re-evaluates already-classified entries, но строго promotion-only по `state_rank = {new:0, needs_action:1, done:2, processed:3}` — никогда не downgrade'ит. | `TASK CODE: NC-DEV-OPS-038C` / Порядок правил важен (first match wins) — добавляем после rotation/list-index, перед blocked-token. Promotion-only логика inline в migrate loop. Не трогать existing `_ERROR_PATTERN_RULES` order. |
+| **NC-DEV-TEST-038D** | Developer | 2 | 5 unit-тестов для feedback + 2 classifier теста; переписан range-step test | `tests/test_agent.py`, `tests/test_audit.py` | `test_make_feedback_polygon_too_few_vertices`, `test_make_feedback_range_step_zero`, `test_make_feedback_face_from_wire`, `test_make_feedback_quantity_format_string`, `test_make_feedback_vector_three_floats_expected` — каждый проверяет специфичные substrings (e.g. `"Draft.make_polygon"`, `"max(1"`, `"isClosed()"`). `test_classifier_range_arg3_zero_marked_processed` (переписан с `needs_action`), `test_classifier_sprint_5_22_patterns_marked_processed` (батч 6 паттернов), `test_classifier_adapter_init_failure_marked_processed`. Полный `pytest -q` зелёный: 300 passed, 1 skipped, 1 xfailed. | `TASK CODE: NC-DEV-TEST-038D` / Шаблон копируется с `test_make_feedback_shape_invalid` (Sprint 5.6). Classifier тесты используют `_load_classifier()` helper из Sprint 5.21. Не вводить новые конфтесты/фикстуры. |
+| **NC-DEV-OPS-038E** | Operator | 3 | Re-migration на production audit log | `~/Library/Application Support/FreeCAD/v1-1/neurocad/logs/llm-audit.jsonl` | Запуск `scripts/audit_state.py migrate --reclassify --dry-run` → ожидаем `analyzed_needs_action → processed : 12`; затем real run; `stats` после: `analyzed_needs_action == 0`, `processed == 157`. Лог переписан атомарно через tmp + os.replace. | `TASK CODE: NC-DEV-OPS-038E` / Сначала dry-run, потом real. По девизу — не trogать existing fields `data.error`/`correlation_id`/`timestamp`, только `processing_state` mutable. Backup опционален (rotation). |
+| **NC-DEV-DOC-022** | Developer | 4 | Sprint 5.22 раздел + RELEASE_NOTES + версия v2.3 → v2.4 | `doc/SPRINT_PLANS.md`, `README.md`, `doc/RELEASE_NOTES.md` | Раздел Sprint 5.22 в каноническом формате (Предусловие / «Что НЕ меняется» / Цель / Rolling Plan / Задачи / Правила останова / DoD); TOC обновлён; версия документа bumped 2.3 → 2.4; в `RELEASE_NOTES.md` — секция Sprint 5.22 с harness output sample и таблицей закрытия 12 punch-list пунктов; README обновлён до «Sprint 5.22». | — |
+
+### Что НЕ менялось (по девизу)
+- `agent.run` структура, retry loop, audit события, correlation_id flow — без изменений.
+- `executor.execute` sandbox tokenizer, `_BLOCKED_NAME_TOKENS`, namespace builder — без изменений (только worker subprocess дёргает их через JSON-RPC).
+- `defaults.py` — system prompt не изменился (5 новых веток только в runtime feedback, не в prompt'е).
+- `worker._request_exec` Qt main-thread dispatch — не тронут (harness не использует Qt-worker, у него собственный subprocess bridge).
+- `_categorize_error` категории — без изменений (все 5 новых паттернов попадают в существующую category `runtime`).
+- 4 backend'а `key_storage` (Sprint 5.15) — без изменений. Harness читает через ту же `load_key(slug)` API.
+- 293 теста после Sprint 5.21 продолжают проходить; один range-step test переписан с `needs_action` на `processed` (новое ожидание), это семантический update, не регрессия.
+
+**Правила останова Sprint 5.22:** изменение существующих feedback-веток (только additive) → rejected / harness, который требует sudo / pip install в FreeCAD bundle → rejected (sandbox-violation) / `migrate --reclassify` downgrade'ит уже-`processed` запись → rejected / harness scenario с `success_check`, который зависит от точного имени FreeCAD-объекта (LLM волен называть «Cube» вместо «Box») → rejected (использовать `volume`/`isValid`/name-prefix); ответ без TASK CODE = невалиден.
+
+---
+
+## DoD-чеклист Sprint 5.22
+
+1. `pytest -q --tb=short` → 300 passed, 1 skipped, 1 xfailed (было 293).
+2. `_make_feedback("Cannot create polygon because less than two vertices are given", "runtime")` содержит «polygon», «len(points)», «Draft.make_polygon».
+3. `_make_feedback("range() arg 3 must not be zero", "runtime")` содержит «step», «max(1», «int(».
+4. `_make_feedback("Failed to create face from wire", "runtime")` содержит «isClosed()», «isValid()», «planar» / «plane».
+5. `_make_feedback("unsupported format string passed to Base.Quantity.__format__", "runtime")` содержит «.Value», `f'{obj.Length.Value`.
+6. `_make_feedback("Either three floats, tuple or Vector expected", "runtime")` содержит «3», «[:3]», «PART VI».
+7. Classifier: `classify({"event_type":"agent_attempt","data":{"ok":False,"error":"range() arg 3 must not be zero"}})` → (`processed`, reason содержит «5.22»).
+8. Classifier: `classify({"event_type":"adapter_init_failure", ...})` → `processed`.
+9. `scripts/audit_state.py stats` после migrate: `analyzed_needs_action == 0`.
+10. `scripts/headless_dogfood.py --scenario all` → 3/3 PASS (R4, R1, ATLAS), без regressions vs первого батча.
+
+## Verification (end-to-end)
+
+```bash
+# 1. Регрессия
+.venv/bin/pytest --tb=short -q
+
+# 2. Audit re-migrate
+.venv/bin/python scripts/audit_state.py migrate --reclassify --dry-run
+.venv/bin/python scripts/audit_state.py migrate --reclassify
+.venv/bin/python scripts/audit_state.py stats
+
+# 3. End-to-end harness (DeepSeek + headless FreeCAD)
+.venv/bin/python scripts/headless_dogfood.py --scenario all
+
+# 4. Лист сценариев
+.venv/bin/python scripts/headless_dogfood.py --list
+```
+
+## Критические файлы
+
+- [scripts/headless_dogfood.py](../scripts/headless_dogfood.py) — driver + worker bridge, scenarios, success-checks.
+- [neurocad/core/agent.py](../neurocad/core/agent.py) — `_make_feedback` (5 новых веток в runtime).
+- [scripts/audit_state.py](../scripts/audit_state.py) — `_ERROR_PATTERN_RULES` (+8), `_ERROR_TYPE_RULES` (+1), routing для adapter_init_failure, `--reclassify`.
+- [tests/test_agent.py](../tests/test_agent.py) — 5 feedback тестов.
+- [tests/test_audit.py](../tests/test_audit.py) — переписан range-step test, +2 классификаторных теста.
+
+## Существующие утилиты для переиспользования
+
+- `neurocad.config.key_storage.load_key(slug)` (Sprint 5.15) — single source of truth для API-keys в harness driver.
+- `neurocad.llm.models.MODELS` + `get_model(model_id)` (Sprint 5.17) — auto-resolve adapter/base_url/key_slug по `config["model_id"]`.
+- `neurocad.core.agent.AgentCallbacks` (Sprint 2/5.6) — `on_exec_needed` callback contract, который harness реализует через JSON-RPC.
+- `neurocad.core.executor.execute(code, doc)` (Sprint 2/5.4) — exec sandbox, дёргается worker'ом без изменений.
+- `scripts/audit_state.py classify()` (Sprint 5.21) — расширяется новыми правилами, не переписывается.
 
 ---
 

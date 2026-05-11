@@ -8,6 +8,13 @@ Each audit entry is a JSON object with the following top‑level fields:
 - correlation_id: session‑wide UUIDv4 string.
 - event_type: short string identifying the event (e.g., "llm_request", "execution").
 - data: event‑specific payload (sanitized dictionary).
+- processing_state: lifecycle marker (Sprint 5.21). One of:
+    * "new"                    — just written, not yet reviewed
+    * "analyzed_needs_action"  — reviewed, requires a follow-up fix
+    * "analyzed_done"          — reviewed, no action needed (closed)
+    * "processed"              — fix applied, closed
+  Backward-compat: entries written before Sprint 5.21 may lack this field;
+  readers should default to "new" when it is absent.
 
 Data Payload Contract
 ---------------------
@@ -57,6 +64,18 @@ from neurocad.config.defaults import (
 _AUDIT_LOGGER = None
 _AUDIT_ENABLED = False
 _CORRELATION_ID = None
+
+# Sprint 5.21 — processing state lifecycle.
+PROCESSING_STATE_NEW = "new"
+PROCESSING_STATE_ANALYZED_NEEDS_ACTION = "analyzed_needs_action"
+PROCESSING_STATE_ANALYZED_DONE = "analyzed_done"
+PROCESSING_STATE_PROCESSED = "processed"
+_VALID_PROCESSING_STATES = frozenset({
+    PROCESSING_STATE_NEW,
+    PROCESSING_STATE_ANALYZED_NEEDS_ACTION,
+    PROCESSING_STATE_ANALYZED_DONE,
+    PROCESSING_STATE_PROCESSED,
+})
 
 
 def _cap_preview(text: str, max_chars: int = AUDIT_LOG_MAX_PREVIEW_CHARS) -> str:
@@ -183,6 +202,10 @@ def audit_log(event_type: str, data: dict[str, Any], correlation_id: str | None 
         "timestamp": datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "correlation_id": correlation_id if correlation_id is not None else _CORRELATION_ID,
         "event_type": event_type,
+        # Sprint 5.21: every new entry starts its lifecycle in "new" state.
+        # Reviewers (humans or analyzer scripts) transition it via
+        # update_processing_state(...).
+        "processing_state": PROCESSING_STATE_NEW,
         "data": sanitized,
     }
     try:
@@ -195,3 +218,59 @@ def audit_log(event_type: str, data: dict[str, Any], correlation_id: str | None 
 def get_correlation_id() -> str | None:
     """Return the current session‑wide correlation ID (if audit is enabled)."""
     return _CORRELATION_ID
+
+
+def update_processing_state(
+    log_path: "Path",
+    new_state: str,
+    *,
+    timestamp: str | None = None,
+    correlation_id: str | None = None,
+    event_type: str | None = None,
+) -> int:
+    """Update `processing_state` on matching JSONL entries.
+
+    A line is selected when ALL provided filters match. Returns the number
+    of lines actually updated. Writes atomically through a tmp file so a
+    crash mid-rewrite cannot leave the audit log half-corrupted —
+    `no degradation` motto: never break what's already on disk.
+    """
+    import os as _os
+    from pathlib import Path
+
+    if new_state not in _VALID_PROCESSING_STATES:
+        raise ValueError(
+            f"Unknown processing_state {new_state!r}. "
+            f"Allowed: {sorted(_VALID_PROCESSING_STATES)}."
+        )
+
+    log_path = Path(log_path)
+    if not log_path.exists():
+        return 0
+
+    updated = 0
+    tmp = log_path.with_suffix(log_path.suffix + ".tmp")
+    with open(log_path, encoding="utf-8") as fin, open(tmp, "w", encoding="utf-8") as fout:
+        for line in fin:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                fout.write(line)
+                continue
+
+            if timestamp is not None and entry.get("timestamp") != timestamp:
+                fout.write(line)
+                continue
+            if correlation_id is not None and entry.get("correlation_id") != correlation_id:
+                fout.write(line)
+                continue
+            if event_type is not None and entry.get("event_type") != event_type:
+                fout.write(line)
+                continue
+
+            entry["processing_state"] = new_state
+            fout.write(json.dumps(entry, separators=(",", ":")) + "\n")
+            updated += 1
+
+    _os.replace(tmp, log_path)
+    return updated

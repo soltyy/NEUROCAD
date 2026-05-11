@@ -7,7 +7,7 @@ AI‑powered CAD assistant for FreeCAD.
 For installation and development instructions, see [DEV_SETUP.md](DEV_SETUP.md).  
 For architecture and sprint plans, see the `doc/` directory.
 
-Current implementation status (Sprint 5.20, April 2026):
+Current implementation status (Sprint 5.22, May 2026):
 - LLM integration (OpenAI, Anthropic) with configurable provider, model, and API key management
 - Multi‑step Python code execution from LLM responses with rollback on error
 - Secure API key storage via system keyring, environment variables, or session‑only use
@@ -50,6 +50,10 @@ Current implementation status (Sprint 5.20, April 2026):
 - 3D-text canonical recipe (PART VII, Sprint 5.20): cross-platform `neurocad_default_font()` + `Draft.make_shapestring + Part::Extrusion` + `place_word_on_orbit` helper. Executor exposes `platform_name` and `file_exists` in the sandbox.
 - Smarter NameError feedback: if the undefined name looks like a FreeCAD document object (Capitalized / Cyrillic / contains `sphere`, `куб`, `bolt`, `шайб`, …), the suggestion is `varname = doc.getObject('...')` instead of the generic scoping message.
 - ViewObject attribute-error feedback: `FontSize / TextSize / LabelText / …` on a Part ViewProvider redirects the LLM to the PART VII 3D-text recipe.
+- Audit log processing-state lifecycle (Sprint 5.21): every entry carries `processing_state` (`new` / `analyzed_needs_action` / `analyzed_done` / `processed`). `scripts/audit_state.py` provides `migrate` (retro-classify by sprint-mapped rules), `stats`, and `mark` sub-commands. 815 historic entries were classified — 145 processed, 658 closed without action, 12 open for follow-up.
+- Autonomous end-to-end harness `scripts/headless_dogfood.py` (Sprint 5.22): 2-process bridge — driver (project venv with `anthropic`/`openai` SDK) ↔ worker (`freecadcmd` subprocess with real FreeCAD 1.1) over JSON-Lines RPC. Curated scenarios (cube, M24 bolt with thread, "АТЛАС КОНСАЛТИНГ" 3D text on a sphere orbit) run the full LLM → code → exec → validate loop without manual UI clicks; success is verified against `Shape.Volume` / `isValid()` instead of fragile name substrings.
+- Five new `_make_feedback` runtime branches (Sprint 5.22): `Cannot create polygon (too few vertices)`, `range() arg 3 must not be zero`, `Failed to create face from wire`, `unsupported format string passed to Base.Quantity.__format__`, `Either three floats … Vector expected`. All branches are strictly additive (no existing feedback changed).
+- Audit classifier extended (Sprint 5.22): +8 needles in `_ERROR_PATTERN_RULES`, `adapter_init_failure → processed` event-type rule, routing applied to non-`agent_*` event types, and a new `migrate --reclassify` flag that promotes-only (never downgrades). Production log re-migrated: `analyzed_needs_action` 12 → 0.
 
 ## License
 

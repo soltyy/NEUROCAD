@@ -130,9 +130,11 @@ def test_audit_log_jsonl_schema():
             assert entry["event_type"] == "test_schema"
             assert "data" in entry
             assert isinstance(entry["data"], dict)
-            # No extra top‑level fields
-            expected_keys = {"timestamp", "correlation_id", "event_type", "data"}
-            assert set(entry.keys()) == expected_keys, f"Extra keys: {set(entry.keys()) - expected_keys}"
+            # Sprint 5.21: processing_state field added to schema, starts as "new"
+            assert "processing_state" in entry
+            assert entry["processing_state"] == "new"
+            expected_keys = {"timestamp", "correlation_id", "event_type", "data", "processing_state"}
+            assert set(entry.keys()) == expected_keys, f"Unexpected keys: {set(entry.keys()) ^ expected_keys}"
             # Payload content
             assert entry["data"]["number"] == 42
             assert entry["data"]["list"] == [1, 2, 3]
@@ -342,6 +344,184 @@ def test_adapter_init_failure_audited(monkeypatch, qapp):
     assert "No API key found" in data["error"]
     # Ensure no secrets are logged
     assert "api_key" not in data
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5.21 — processing_state lifecycle tests
+# ---------------------------------------------------------------------------
+
+def test_update_processing_state_by_timestamp(tmp_path):
+    """update_processing_state rewrites only matching entries."""
+    from neurocad.core.audit import update_processing_state
+
+    log = tmp_path / "audit.jsonl"
+    entries = [
+        {"timestamp": "2026-04-18T10:00:00.000000Z", "correlation_id": "c1",
+         "event_type": "agent_attempt", "processing_state": "new",
+         "data": {"ok": False, "error": "x"}},
+        {"timestamp": "2026-04-18T10:00:01.000000Z", "correlation_id": "c1",
+         "event_type": "agent_attempt", "processing_state": "new",
+         "data": {"ok": True}},
+    ]
+    log.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+    n = update_processing_state(log, "processed",
+                                 timestamp="2026-04-18T10:00:00.000000Z")
+    assert n == 1
+
+    lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["processing_state"] == "processed"
+    assert lines[1]["processing_state"] == "new"
+
+
+def test_update_processing_state_rejects_invalid_state(tmp_path):
+    from neurocad.core.audit import update_processing_state
+    log = tmp_path / "audit.jsonl"
+    log.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown processing_state"):
+        update_processing_state(log, "garbage")
+
+
+def test_update_processing_state_filters_by_correlation_id(tmp_path):
+    from neurocad.core.audit import update_processing_state
+    log = tmp_path / "audit.jsonl"
+    entries = [
+        {"timestamp": "t1", "correlation_id": "A", "event_type": "x",
+         "processing_state": "new", "data": {}},
+        {"timestamp": "t2", "correlation_id": "B", "event_type": "x",
+         "processing_state": "new", "data": {}},
+    ]
+    log.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    n = update_processing_state(log, "processed", correlation_id="B")
+    assert n == 1
+    lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["processing_state"] == "new"
+    assert lines[1]["processing_state"] == "processed"
+
+
+def test_update_processing_state_missing_file_returns_zero(tmp_path):
+    from neurocad.core.audit import update_processing_state
+    n = update_processing_state(tmp_path / "does-not-exist.jsonl", "processed")
+    assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5.21 — classifier rules (in scripts/audit_state.py)
+# ---------------------------------------------------------------------------
+
+def _load_classifier():
+    """Load scripts/audit_state.py as a module (it lives outside the package)."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "audit_state",
+        Path(__file__).parent.parent / "scripts" / "audit_state.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules["audit_state"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_classifier_positive_events_are_analyzed_done():
+    cls = _load_classifier()
+    for ev in ("agent_start", "agent_success"):
+        state, _ = cls.classify({"event_type": ev, "data": {}})
+        assert state == cls.STATE_ANALYZED_DONE
+
+
+def test_classifier_attempt_ok_is_analyzed_done():
+    cls = _load_classifier()
+    state, _ = cls.classify({"event_type": "agent_attempt", "data": {"ok": True}})
+    assert state == cls.STATE_ANALYZED_DONE
+
+
+def test_classifier_addressed_error_pattern_is_processed():
+    cls = _load_classifier()
+    # Shape is invalid → addressed in Sprint 5.6 / 5.16
+    state, reason = cls.classify({
+        "event_type": "agent_attempt",
+        "data": {"ok": False, "error": "Validation failed for Foo: Shape is invalid"},
+    })
+    assert state == cls.STATE_PROCESSED
+    assert "shape is invalid" in reason.lower()
+
+
+def test_classifier_unknown_error_pattern_needs_action():
+    cls = _load_classifier()
+    state, _ = cls.classify({
+        "event_type": "agent_attempt",
+        "data": {"ok": False, "error": "Brand new error nobody has seen yet"},
+    })
+    assert state == cls.STATE_ANALYZED_NEEDS_ACTION
+
+
+def test_classifier_cancelled_by_user_is_processed_by_design():
+    cls = _load_classifier()
+    state, _ = cls.classify({
+        "event_type": "agent_error",
+        "data": {"error_type": "cancelled_by_user", "error": "Cancelled by user"},
+    })
+    assert state == cls.STATE_PROCESSED
+
+
+def test_classifier_max_retries_refined_by_last_error():
+    cls = _load_classifier()
+    state, reason = cls.classify({
+        "event_type": "agent_error",
+        "data": {
+            "error_type": "max_retries_exhausted",
+            "error": "Max retries exceeded: Shape is null",
+            "last_error": "Shape is null",
+        },
+    })
+    assert state == cls.STATE_PROCESSED
+    assert "shape is null" in reason.lower()
+
+
+def test_classifier_range_arg3_zero_marked_processed():
+    """Sprint 5.22: 'range() arg 3 must not be zero' now has a feedback branch
+    (defensive step pattern) — classifier promotes it to 'processed'."""
+    cls = _load_classifier()
+    state, reason = cls.classify({
+        "event_type": "agent_attempt",
+        "data": {"ok": False, "error": "range() arg 3 must not be zero"},
+    })
+    assert state == cls.STATE_PROCESSED
+    assert "5.22" in reason
+
+
+def test_classifier_sprint_5_22_patterns_marked_processed():
+    """Sprint 5.22 batch: the 5 new feedback-branch patterns all promote
+    to 'processed' via the audit-state classifier."""
+    cls = _load_classifier()
+    cases = [
+        "Cannot create polygon because less than two vertices are given",
+        "Failed to create face from wire",
+        "unsupported format string passed to Base.Quantity.__format__",
+        "Either three floats, tuple or Vector expected",
+        "'Part.Face' object has no attribute 'makePipeShell'",
+        "'Part.Wire' object has no attribute 'transform'",
+    ]
+    for err in cases:
+        state, reason = cls.classify({
+            "event_type": "agent_attempt",
+            "data": {"ok": False, "error": err},
+        })
+        assert state == cls.STATE_PROCESSED, f"{err!r} → {state} ({reason})"
+
+
+def test_classifier_adapter_init_failure_marked_processed():
+    """Sprint 5.22: adapter_init_failure is a user-config issue (no API key),
+    not an agent bug — classifier maps it to 'processed'."""
+    cls = _load_classifier()
+    state, reason = cls.classify({
+        "event_type": "adapter_init_failure",
+        "data": {"error": "No API key found for provider 'openai'"},
+    })
+    assert state == cls.STATE_PROCESSED
+    assert "by-design" in reason.lower() or "settings" in reason.lower()
 
 
 if __name__ == "__main__":

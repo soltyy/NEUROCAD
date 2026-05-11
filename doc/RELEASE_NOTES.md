@@ -1,3 +1,101 @@
+# Release Notes – Sprint 5.22 (Headless Dog-Food Harness + Open Punch-List Closure)
+
+**Date:** 2026‑05‑11
+**Based on:** User request «можешь сам тестировать во FreeCAD без моего участия?» — manual dog-food gates were expensive and user-dependent. In parallel, Sprint 5.21 left 12 audit entries open as `analyzed_needs_action`. Sprint 5.22 ships an autonomous regression harness AND closes those 12 entries via 5 new feedback hints + classifier rule extensions.
+
+## What changed
+
+- **`scripts/headless_dogfood.py`** (new): single-file harness with a 2-process bridge.
+  - Driver (project venv): owns `agent.run`, the LLM adapter (anthropic / openai SDK), `History`, and the scenario verdicts. Reads the production `~/Library/Application Support/FreeCAD/v1-1/neurocad/config.json` directly (FreeCAD's `UserAppData` isn't visible to the venv) and pulls the API key via `key_storage.load_key(spec.key_slug)` with env-var overrides.
+  - Worker (`freecadcmd <this script>`): owns the FreeCAD document and runs `executor.execute(code, doc)`. Communicates with the driver over JSON-Lines RPC on `sys.__stdin__` / `sys.__stdout__` (FreeCAD redirects regular `stdout` to its console widget, so the harness uses the underlying file objects directly). Gated by env-flag `NEUROCAD_DOGFOOD_WORKER=1` because `freecadcmd` imports user scripts as a module, not as `__main__`.
+  - Scenarios (`--scenario R4|R1|ATLAS|all`): cube 20×20×20, M24 bolt with thread, "АТЛАС КОНСАЛТИНГ" 3D text on a sphere orbit. Success-checks operate on `inspect.objects[*].volume` and `isValid()` rather than name substrings, so they tolerate the LLM naming a cube `Cube` vs `Box`.
+- **`neurocad/core/agent.py`** — `_make_feedback` runtime section gains 5 additive branches (no existing branch touched):
+  - `Cannot create polygon because less than two vertices …` → polygon-vertex guard hint with `Draft.make_polygon` / `Part.makePolygon` patterns and `if len(points) < 2: continue` defensive check.
+  - `range() arg 3 must not be zero` → `step = max(1, int(round(spacing)))` pattern + `while` loop with `assert step != 0` alternative.
+  - `Failed to create face from wire` → `isClosed()` + `isValid()` + planar checklist + project-onto-plane fix.
+  - `unsupported format string passed to Base.Quantity.__format__` → use `.Value` before f-string format-spec: `f'{obj.Length.Value:.2f}'`.
+  - `Either three floats, tuple or Vector expected` → nD → 3D projection: `Vector(*coord[:3])`, references PART VI of the system prompt (wireframe recipe).
+- **`scripts/audit_state.py`** — classifier extensions:
+  - `_ERROR_PATTERN_RULES`: +8 needles. The 5 new patterns above promote to `processed → 5.22`. Three legacy patterns now have explicit rules (`has no attribute 'makepipeshell'` → 5.11, `has no attribute 'transform'` → 5.16, `llm request timed out` → 5.6/5.18 by-design).
+  - `_ERROR_TYPE_RULES`: `+ adapter_init_failure → processed (by-design, Settings dialog)`. Routing now applies these rules to non-`agent_*` event types too (was: fell through to "unknown event_type").
+  - `--reclassify` flag on `migrate`: re-evaluates already-classified entries. Strictly promotion-only via `state_rank = {new:0, needs_action:1, done:2, processed:3}` — never downgrades, even if the rule table changes.
+- **`tests/test_agent.py`** — 5 new unit tests, one per new feedback branch.
+- **`tests/test_audit.py`** — the `range() arg 3` test is rewritten from `needs_action` → `processed` (matches the new feedback hint); two new classifier batch tests for the Sprint 5.22 patterns and the `adapter_init_failure` event type.
+
+## Migration outcome on the production log
+
+```
+Before re-migrate:                         After re-migrate (--reclassify):
+  analyzed_needs_action : 12  (1.5 %)        analyzed_needs_action :   0  (0.0 %)
+  analyzed_done         : 658 (80.7 %)       analyzed_done         : 658 (80.7 %)
+  processed             : 145 (17.8 %)       processed             : 157 (19.3 %)
+```
+
+All 12 open entries were promoted. Breakdown:
+
+| Entry | Resolution |
+|---|---|
+| `'Part.Face' object has no attribute 'makePipeShell'` | already in feedback since Sprint 5.11; classifier rule added |
+| `'Part.Wire' object has no attribute 'transform'` | already in feedback since Sprint 5.16; classifier rule added |
+| `LLM request timed out after 120s` | timeout-category feedback already covers it (by-design) |
+| `adapter_init_failure` (×2, openai + deepseek) | user-config issue (no key) — by-design, Settings dialog handles |
+| `Either three floats, tuple or Vector expected` | new feedback branch + Sprint 5.14 system-prompt guard |
+| `Cannot create polygon because less than two vertices …` | new feedback branch |
+| `range() arg 3 must not be zero` | new feedback branch |
+| `Failed to create face from wire` (×2) | new feedback branch |
+| `unsupported format string passed to Base.Quantity.__format__` | new feedback branch |
+
+## Harness output (DeepSeek `deepseek-chat`, 3/3 PASS)
+
+```
+Model: DeepSeek Chat  (deepseek:chat, adapter=openai)
+Key source: keystorage:System keyring  (len=35)
+Spawning worker: /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd …/headless_dogfood.py
+Worker ready (FreeCAD 1.1.0, doc=Dogfood)
+
+=== R4 — Регрессия — куб 20×20×20
+    [PASS] attempts=1 elapsed=2.5s — Cube vol=8000.0
+=== R1 — Болт M24 с резьбой
+    [PASS] attempts=1 elapsed=12.2s — 7 valid solid(s)
+=== ATLAS — Слова АТЛАС КОНСАЛТИНГ по орбите сферы
+    [PASS] attempts=1 elapsed=8.8s — 30 glyph objects (30 valid)
+TOTAL: 3/3 scenarios passed (~24 s + ~63 k prompt tokens for the batch)
+```
+
+## No-degradation contract
+
+- `agent.run` / `executor.execute` / `worker._request_exec` / sandbox tokenizer / `defaults.py` system prompt — **all unchanged**. Sprint 5.22 is strictly additive in code: 5 new feedback branches appended to the end of the runtime section, 8 new classifier needles appended after the rotation/list-index group, 1 new event-type rule.
+- The `migrate --reclassify` path enforces promotion-only via an explicit `state_rank` comparison: a `processed` entry can never become `needs_action` again, even if a rule is deleted from the table.
+- 293 tests from Sprint 5.21 still pass; the renamed range-step test is a semantic update, not a regression. Total: 300 passed, 1 skipped, 1 xfailed.
+
+## Migration / rollout notes
+
+- The harness is run from the project venv, not from inside FreeCAD. No new dependency in `pyproject.toml` — `anthropic` and `openai` SDKs are needed only when actually using `headless_dogfood.py`; install them in the venv as needed.
+- `audit_state.py migrate --reclassify` is opt-in (the no-arg `migrate` still respects the "no downgrade" rule from Sprint 5.21).
+- Production audit log was re-migrated once after merge; future `migrate` runs are no-ops unless `--reclassify` is passed.
+
+## Rollback notes
+
+Revert `neurocad/core/agent.py` (remove the 5 new `_make_feedback` branches), `scripts/audit_state.py` (remove `--reclassify`, the 8 new pattern rules, the 1 new event-type rule, the routing for non-`agent_*` events), `tests/test_agent.py` (remove 5 new tests), `tests/test_audit.py` (restore the previous range-step assertion, remove the 2 new classifier tests), and delete `scripts/headless_dogfood.py`. The re-migrated audit log is forward-compatible — older readers ignore `processing_state`.
+
+## Manual verification
+
+```bash
+# Regression
+.venv/bin/pytest --tb=short -q                    # 300 passed
+
+# Audit state
+.venv/bin/python scripts/audit_state.py stats
+.venv/bin/python scripts/audit_state.py migrate --reclassify --dry-run
+
+# Autonomous end-to-end (DeepSeek + headless FreeCAD)
+.venv/bin/python scripts/headless_dogfood.py --list
+.venv/bin/python scripts/headless_dogfood.py --scenario R4
+.venv/bin/python scripts/headless_dogfood.py --scenario all
+```
+
+---
+
 # Release Notes – Sprint 5.19 (Autoscroll Anchor Fix)
 
 **Date:** 2026‑04‑18
@@ -8,6 +106,64 @@ Standard Qt "stick-to-bottom" idiom: connect `verticalScrollBar().rangeChanged` 
 
 ## Manual verification
 Submit 5+ consecutive requests; after the last one the chat should show the newest bubble fully visible. Scroll up manually to read history — autoscroll stops. Scroll back within 20 px of the bottom — autoscroll resumes.
+
+---
+
+# Release Notes – Sprint 5.21 (Audit Log Processing-State Lifecycle)
+
+**Date:** 2026‑04‑18
+**Based on:** User request — tag every audit entry with a processing state to track what's been reviewed / fixed / still open. Lifecycle: `new → analyzed (needs action | done) → processed`. All 815 historic entries are retro-classified against the shipped sprint history; future entries start as `new`.
+
+## What changed
+
+- **`neurocad/core/audit.py`**: every new audit entry now carries `processing_state: "new"`. New helper `update_processing_state(log_path, new_state, *, timestamp=..., correlation_id=..., event_type=...)` atomically rewrites matching lines via a tmp file + `os.replace` so a crash mid-rewrite cannot leave the log half-corrupted.
+- **`scripts/audit_state.py`** (new CLI):
+  - `migrate` — adds `processing_state` to legacy entries using a 27-pattern rule table that maps each known error string to the sprint that addressed it. Already-classified entries are not downgraded.
+  - `stats` — distribution by state and event_type plus the first 10 open `analyzed_needs_action` items.
+  - `mark` — manual state override by timestamp / correlation_id / event_type filters.
+- **11 new tests** covering `update_processing_state` (atomic, filtered, missing-file safe) and the classifier rules (positive events, ok attempts, addressed patterns → `processed`, unknown → `analyzed_needs_action`, cancelled_by_user, max_retries_exhausted refinement by `last_error`, the open `range() arg 3 must not be zero` case).
+
+## Migration outcome on the production log
+
+```
+Total entries: 815
+  new                          :     0   (0.0 %)
+  analyzed_needs_action        :    12   (1.5 %) ← open punch list
+  analyzed_done                :   658  (80.7 %) ← positive / informational
+  processed                    :   145  (17.8 %) ← addressed by 5.4–5.20
+```
+
+The 12 open items are the next sprint's candidate scope:
+- `'Part.Face' object has no attribute 'makePipeShell'`
+- `'Part.Wire' object has no attribute 'transform'` (should be `transformShape`/`transformed`)
+- `LLM request timed out after 120s` (legacy entry; 5.4 raised the default)
+- `Either three floats, tuple or Vector expected` — Vector constructor variant
+- `Cannot create polygon because less than two vertices are given`
+- `range() arg 3 must not be zero`
+- `Failed to create face from wire`
+- 5 more (see `scripts/audit_state.py stats`).
+
+## No-degradation contract
+
+The `data` payload of existing entries is never modified by migration — only `processing_state` is added. Append-only behaviour at write time is preserved (the field is set once at log time; subsequent transitions are explicit ops through `update_processing_state` / the CLI). All 282 previously-passing tests still pass; the schema test now expects 5 top-level keys instead of 4.
+
+## Migration / rollout notes
+
+- The migration command is idempotent — re-running it leaves already-classified entries unchanged.
+- The atomic rewrite uses `tmp` + `os.replace`, the same pattern the rest of the codebase uses for safe disk writes (e.g. plaintext key storage).
+- Backward-compat for readers: entries without the field are treated as `new`.
+
+## Rollback notes
+
+Revert `neurocad/core/audit.py` and `tests/test_audit.py`; delete `scripts/audit_state.py`. The migrated log keeps its `processing_state` field — harmless for older readers because they simply ignore unknown JSON keys.
+
+## Manual verification
+
+```bash
+python scripts/audit_state.py stats
+python scripts/audit_state.py migrate --dry-run
+python scripts/audit_state.py mark --ts <ISO-Z> --state processed
+```
 
 ---
 

@@ -694,18 +694,33 @@ cyl.Placement=FreeCAD.Placement(FreeCAD.Vector(65,15,0), FreeCAD.Rotation(0,0,0)
 doc.recompute()
 
 # RADIAL CYLINDER (spoke, pin, etc.) — cylinder height is along Z by default.
-# Rotating around Z does NOT change height direction — spokes stay vertical.
-# To lay a cylinder radially at angle `a` (degrees from X axis), rotate 90° around
-# the tangent axis (perpendicular to the radial direction in XY plane):
-#   a_rad = math.radians(angle)
+# CRITICAL — Part::Cylinder.Placement positions the BASE (z=0 end), NOT the
+# centre. After a 90° rotation around the tangent axis, the cylinder lies in
+# the XY plane and its "+Z" axis points along the +radial direction. The
+# Placement position is therefore the INNER endpoint of the spoke (the end
+# nearest the hub), and the cylinder extends OUTWARD by `Height` mm.
+#
+# Therefore the start_pos must be AT the hub surface (r = hub_r), NOT at the
+# midpoint. A common LLM bug is to set start_pos at mid_r — that makes the
+# spoke start in the middle of the gap AND poke past the rim by length/2,
+# breaking the wheel joint geometry.
+#
+# CANONICAL spoke recipe — joins hub_r to rim_inner_r exactly:
+#   a_rad = math.radians(angle_deg)
 #   tangent = FreeCAD.Vector(-math.sin(a_rad), math.cos(a_rad), 0)
-#   obj.Placement = FreeCAD.Placement(start_pos, FreeCAD.Rotation(tangent, 90))
-# Example — spoke from hub_r to rim_r at angle a, centered at midpoint:
-#   hub_r = 25; rim_r = 300; length = rim_r - hub_r
-#   mid_r = (hub_r + rim_r) / 2
-#   start_pos = FreeCAD.Vector(mid_r * math.cos(a_rad), mid_r * math.sin(a_rad), 0)
-#   tangent = FreeCAD.Vector(-math.sin(a_rad), math.cos(a_rad), 0)
+#   spoke_length = rim_inner_r - hub_r        # = gap between hub & rim
+#   # start at the hub surface (r = hub_r); cylinder extends OUTWARD by Height:
+#   start_pos = FreeCAD.Vector(hub_r * math.cos(a_rad),
+#                               hub_r * math.sin(a_rad), 0)
+#   spoke = doc.addObject("Part::Cylinder", f"Spoke_{i:02d}")
+#   spoke.Radius = spoke_r
+#   spoke.Height = spoke_length
 #   spoke.Placement = FreeCAD.Placement(start_pos, FreeCAD.Rotation(tangent, 90))
+#
+# Verify: spoke endpoints land at r=hub_r (inner) and r=rim_inner_r (outer)
+# exactly — assemble + use Part.distToShape against the hub and rim to confirm:
+#   assert hub.Shape.distToShape(spoke.Shape)[0] < 0.1   # spoke touches hub
+#   assert rim.Shape.distToShape(spoke.Shape)[0] < 0.1   # spoke touches rim
 
 sph = doc.addObject("Part::Sphere","Sphere")
 sph.Radius=12.0
@@ -1241,10 +1256,31 @@ teeth_compound.Shape = Part.makeCompound(copies)
 tooth.Visibility = False
 doc.recompute()
 # --- fuse disc + teeth ---
-gear = doc.addObject("Part::MultiFuse", "Gear")
-gear.Shapes = [disc, teeth_compound]
+gear_fused = doc.addObject("Part::MultiFuse", "GearFused")
+gear_fused.Shapes = [disc, teeth_compound]
 disc.Visibility = False; teeth_compound.Visibility = False
 doc.recompute()
+# --- MANDATORY central axle hole: real gears mount on a shaft ---
+# bore diameter typically 0.20-0.35 of the pitch diameter; here 0.25:
+bore_r = pitch_r * 0.25
+axle_hole = doc.addObject("Part::Cylinder", "GearBore")
+axle_hole.Radius = bore_r
+axle_hole.Height = gear_h + 2.0                  # +1 mm overshoot top & bottom
+axle_hole.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, -1.0),
+                                         FreeCAD.Rotation())
+doc.recompute()
+gear = doc.addObject("Part::Cut", "Gear")
+gear.Base = gear_fused
+gear.Tool = axle_hole
+gear_fused.Visibility = False
+axle_hole.Visibility = False
+doc.recompute()
+# --- self-check: there must actually be a hole at the centre ---
+center_pt = FreeCAD.Vector(0.0, 0.0, gear_h / 2.0)
+assert not gear.Shape.isInside(center_pt, 0.01, True), (
+    f"Gear has no axle hole at the centre — Part::Cut(disc, bore) failed. "
+    f"Verify bore_r ({bore_r:.1f} mm) > 0 and bore.Height ≥ gear_h."
+)
 #
 # NOTE — this recipe produces a RECOGNIZABLE spur gear suitable for
 # visualization, 3D printing and simple mechanical mock-ups. It is NOT a true
@@ -1312,14 +1348,60 @@ def make_edge_cylinder(doc, start, end, radius, name="Edge"):
     doc.recompute()
     return cyl
 #
-# Hypercube pattern (N-dimensional cube with 2^N vertices and N * 2^(N-1) edges):
-#   vtx_nd = list(itertools.product([-1, 1], repeat=N))
-#   edges_nd = [(i, j) for i, v in enumerate(vtx_nd)
-#                       for j, w in enumerate(vtx_nd) if i < j
-#                       and sum(a != b for a, b in zip(v, w)) == 1]
-# Project to 3D via a (3, N) projection matrix or a simple linear formula.
-# Draw a sphere at each 3D point and call make_edge_cylinder for each edge.
-# Do NOT try to render the nD "faces" or "cells" — they project degenerately.
+# Hypercube pattern (N-dimensional cube):
+#   |V| = 2**N           vertices
+#   |E| = N * 2**(N-1)   edges  (each vertex has N neighbours; counted i<j)
+#   N=3 (cube):     V=8,   E=12
+#   N=4 (tesseract):V=16,  E=32
+#   N=5 (pentaract):V=32,  E=80     ← typical "32 точки, 80 рёбер" prompt
+#   N=6 (hexeract): V=64,  E=192
+#
+# Recognize N from the user's vertex count: «32 точки» → N=5, «64 точки» → N=6.
+# CANONICAL recipe (no imports needed — math is pre-loaded, range/tuple suffice).
+# MUST iterate over ALL N dimensions when building edges. A common bug is to
+# loop `for d in range(3)` (because the *projection* is 3D), which gives
+# 3 * 2**(N-1) edges instead of N * 2**(N-1) — for N=5, you'd produce 48
+# cylinders instead of 80. The assertion below catches this.
+#
+# N = 5                                  # ← set from the user's request
+# # 1) All 2**N vertices via bit iteration (no itertools needed):
+# vtx_nd = []
+# for i in range(2 ** N):
+#     coord = tuple(1.0 if (i >> d) & 1 else -1.0 for d in range(N))
+#     vtx_nd.append(coord)
+# assert len(vtx_nd) == 2 ** N, f"vertex count: got {len(vtx_nd)} expected {2**N}"
+# # 2) All edges: vertex-pairs differing in EXACTLY one coordinate (Hamming=1).
+# #    Iterate ALL N dimensions, not 3:
+# edges_nd = []
+# for i in range(2 ** N):
+#     for d in range(N):                  # ← N here, NOT 3
+#         j = i ^ (1 << d)                # flip bit d
+#         if i < j:                       # canonical ordering, no duplicates
+#             edges_nd.append((i, j))
+# assert len(edges_nd) == N * 2 ** (N - 1), \
+#     f"edge count: got {len(edges_nd)} expected {N * 2**(N-1)}"
+# # 3) Project nD → 3D. Any (3, N) matrix works; this one is balanced + simple.
+# def project_nd(v):
+#     scale = 50.0                        # mm, controls overall size
+#     # 3 rows × N columns — each row a "view direction" in nD:
+#     x = sum(math.cos(d * 1.1) * v[d] for d in range(N)) * scale
+#     y = sum(math.sin(d * 1.1) * v[d] for d in range(N)) * scale
+#     z = sum(math.cos(d * 0.7 + 0.4) * v[d] for d in range(N)) * scale
+#     return FreeCAD.Vector(x, y, z)
+# projected = [project_nd(v) for v in vtx_nd]
+# # 4) Render: small sphere per vertex, cylinder per edge via the helper above.
+# sphere_r = 2.5
+# edge_r   = 0.8
+# for idx, p in enumerate(projected):
+#     s = doc.addObject("Part::Sphere", f"V_{idx:02d}")
+#     s.Radius = sphere_r
+#     s.Placement = FreeCAD.Placement(p, FreeCAD.Rotation())
+# for k, (i, j) in enumerate(edges_nd):
+#     make_edge_cylinder(doc, projected[i], projected[j], edge_r, f"E_{k:03d}")
+# doc.recompute()
+#
+# Do NOT try to render the nD "faces" / "cells" — Part::Box on collapsed
+# projections produces invalid OCCT solids (Touched/Invalid state).
 
 ===========================================================================
 ## PART VII — 3D text ("АТЛАС", labels, legends, orbiting words)
@@ -1436,6 +1518,230 @@ def place_word_on_orbit(doc, word: str, center, orbit_r: float,
 #      `neurocad_default_font()` or an explicit user-supplied path.
 #   4. "сколько влезет по кругу" = divide 360° by the number of non-space
 #      characters; do NOT try to fit by arc length (glyph widths vary).
+
+===========================================================================
+## PART VIII — Real-world scale & spatial reasoning
+===========================================================================
+# When the user describes everyday objects (мебель, дом, болт, велосипед),
+# default to REAL-WORLD dimensions in millimetres. Common LLM failures are
+# (a) extreme over-scaling (a 2-storey house rendered ~9 m tall instead of
+# ~6 m) and (b) packing items so densely that they overlap.
+#
+# ----- Architectural defaults (mm) -----------------------------------------
+# Standard ceiling height (one storey):           2700-3000 mm
+# 2-storey house TOTAL HEIGHT (including roof peak):  ≤ 7500 mm   ← HARD CAP
+#   storey 1 floor → storey 1 ceiling             0 → 3000
+#   storey 1 ceiling → storey 2 ceiling           3000 → 6000
+#   roof peak (pitched gable +1000-1500):         6000 → 7000-7500
+# Common LLM bug: piling 3000 (storey 1) + 3000 (storey 2) + 3000 (roof) = 9000 mm.
+# Roof must be 1000-1500 mm thick, NOT a full storey. Stacking three 3000 mm
+# layers is WRONG.
+#
+# MANDATORY self-check at the end of a 2-storey house block:
+#   bbox = doc.getObject("House").Shape.BoundBox  # or whatever final object
+#   total_h = bbox.ZLength
+#   assert 3500 <= total_h <= 7500, (
+#       f"House height {total_h:.0f} mm is unrealistic for a 2-storey "
+#       f"residential building. Expected 5000-7500 mm (incl. pitched roof). "
+#       f"Reduce ceiling heights to ≤ 3000 mm and roof to ≤ 1500 mm."
+#   )
+# Typical exterior wall thickness:                200-400 mm
+# Door:    900 × 2100  mm                         Window: 800-1500 × 1200-1600 mm
+# Kitchen base cabinet:                          600 D × 720 H × 600 W
+# Kitchen wall cabinet:                          300 D × 720 H × 600 W
+# Countertop height above floor:                 850-900 mm
+# Sink (мойка) cutout in countertop:             500-600 × 400-500 mm
+#
+# CRITICAL — when the user mentions "мойка"/"sink"/"раковина"/"можно
+# разместить мойку", the kitchen MUST include a sink. The canonical pattern
+# is a Part::Cut on the countertop:
+#   sink_bowl = doc.addObject("Part::Box", "SinkBowl")
+#   sink_bowl.Length = 500.0
+#   sink_bowl.Width  = 400.0
+#   sink_bowl.Height = 220.0  # bowl depth + extend below countertop
+#   sink_bowl.Placement = FreeCAD.Placement(
+#       FreeCAD.Vector(sink_x, sink_y, countertop_height - sink_height),
+#       FreeCAD.Rotation())
+#   countertop_with_sink = doc.addObject("Part::Cut", "CountertopWithSink")
+#   countertop_with_sink.Base = countertop
+#   countertop_with_sink.Tool = sink_bowl
+#   countertop.Visibility = False; sink_bowl.Visibility = False
+#   doc.recompute()
+# Do NOT skip the sink — the user explicitly asked for it.
+# Bicycle wheel outer diameter (700C / 28"):     700 mm (rim ID ≈ 622 mm)
+# Bicycle hub diameter:                          ~40 mm
+#
+# ----- Sphere / box packing defaults ---------------------------------------
+# When packing N spheres in a container, ENSURE no two spheres overlap:
+#   grid_step >= 2 * r_max + clearance       (clearance ≥ 0.1 mm)
+# A naive uniform grid with `step = container_size / N` and varying random
+# radii up to half the step WILL overlap on adjacent cells — sphere centres
+# at distance `step` must satisfy `step >= r_i + r_j`. Safe pattern:
+#
+#   r_max = step / 2 - clearance / 2     # ← derive radius from step, NOT vice versa
+#   for ix in range(nx):
+#       for iy in range(ny):
+#           for iz in range(nz):
+#               cx, cy, cz = origin + (ix*step, iy*step, iz*step)
+#               r = random.uniform(r_min, r_max)
+#               sphere = doc.addObject("Part::Sphere", f"Sphere_{ix}_{iy}_{iz}")
+#               sphere.Radius = r
+#               sphere.Placement = FreeCAD.Placement(FreeCAD.Vector(cx, cy, cz), ...)
+#
+# For "fill X with N spheres of varying diameter" prompts, prefer a grid
+# with `step` slightly larger than `2 * r_max`, OR use a random-placement
+# routine that rejects candidates within `r_new + r_existing` of any
+# previously-placed sphere. Never rely on the LLM "eyeballing" overlaps.
+#
+# ----- Container-vs-filler distinction -------------------------------------
+# When the user says "заполни сферу другими сферами разного диаметра", the
+# OUTER sphere is the CONTAINER and the small ones are FILLERS. The outer
+# sphere should be partially transparent or hollow (use doc.ViewObject.
+# Transparency = 70 if GUI is available — skip in headless), and the
+# fillers MUST be placed entirely inside it: for every filler i,
+# `|center_i - center_outer| + r_i <= r_outer - clearance` (clearance ≥ 0.1).
+#
+# ----- Bicycle wheel: HOLLOW rim, not stacked discs ------------------------
+# A real bicycle wheel is mostly EMPTY space. The combined material volume
+# is small compared to a solid disc of the same outer diameter:
+#   density = total_volume / (π · r_outer² · z_thickness)   ← MUST be < 0.30
+#
+# A common LLM failure is to stack 2-4 SOLID cylinders (tire, rim, hub each
+# as Part::Cylinder with full radius), giving density > 1 (3.4× a solid disc
+# was observed in dog-food). DO NOT do that.
+#
+# CANONICAL bicycle wheel recipe — rim as torus or hollow ring:
+#   rim_outer_d = 700.0          # 700C wheel (ISO 622 mm bead seat + tire)
+#   rim_outer_r = rim_outer_d / 2
+#   rim_inner_r = rim_outer_r - 25.0   # rim is 25 mm thick radially
+#   rim_z = 25.0                       # rim is 25 mm thick axially
+#   hub_r = 20.0
+#   hub_z = 90.0
+#   spoke_r = 1.0                       # 2 mm diameter
+#   num_spokes = 32
+#
+#   # 1) Hollow rim = outer cylinder MINUS inner cylinder.
+#   rim_outer = doc.addObject("Part::Cylinder", "RimOuter")
+#   rim_outer.Radius = rim_outer_r; rim_outer.Height = rim_z
+#   rim_outer.Placement = FreeCAD.Placement(FreeCAD.Vector(0,0,-rim_z/2),
+#                                           FreeCAD.Rotation())
+#   rim_inner = doc.addObject("Part::Cylinder", "RimInner")
+#   rim_inner.Radius = rim_inner_r; rim_inner.Height = rim_z + 1.0
+#   rim_inner.Placement = FreeCAD.Placement(FreeCAD.Vector(0,0,-(rim_z+1)/2),
+#                                           FreeCAD.Rotation())
+#   rim = doc.addObject("Part::Cut", "Rim")
+#   rim.Base = rim_outer; rim.Tool = rim_inner
+#   doc.recompute()
+#
+#   # 2) Hub: small Part::Cylinder centered.
+#   hub = doc.addObject("Part::Cylinder", "Hub")
+#   hub.Radius = hub_r; hub.Height = hub_z
+#   hub.Placement = FreeCAD.Placement(FreeCAD.Vector(0,0,-hub_z/2),
+#                                     FreeCAD.Rotation())
+#
+#   # 3) Spokes via the canonical radial-cylinder pattern (PART II).
+#   #    Use makeCompound — DO NOT use Part::Array / LinearPattern.
+#   #    EACH spoke STARTS at the hub surface (r = hub_r) and extends OUTWARD
+#   #    by `spoke_length = rim_inner_r - hub_r` so it lands exactly on the
+#   #    rim's inner surface. Setting `start_pos` at mid_r (between hub and
+#   #    rim) is WRONG — the spoke would poke past the rim by length/2.
+#   spoke_length = rim_inner_r - hub_r
+#   spoke_shapes = []
+#   for i in range(num_spokes):
+#       a_rad = math.radians(i * 360.0 / num_spokes)
+#       tangent = FreeCAD.Vector(-math.sin(a_rad), math.cos(a_rad), 0)
+#       start_pos = FreeCAD.Vector(hub_r * math.cos(a_rad),    # ← hub_r, NOT mid_r
+#                                  hub_r * math.sin(a_rad), 0)
+#       spoke = doc.addObject("Part::Cylinder", f"Spoke_{i:02d}")
+#       spoke.Radius = spoke_r
+#       spoke.Height = spoke_length
+#       spoke.Placement = FreeCAD.Placement(start_pos,
+#                                            FreeCAD.Rotation(tangent, 90))
+#       doc.recompute()
+#       spoke_shapes.append(spoke)
+#
+#   # 3a) MANDATORY self-check — spokes must touch both hub AND rim:
+#   for s in spoke_shapes:
+#       d_hub = hub.Shape.distToShape(s.Shape)[0]
+#       d_rim = rim.Shape.distToShape(s.Shape)[0]
+#       assert d_hub < 0.5 and d_rim < 0.5, (
+#           f"spoke {s.Name} not touching hub/rim: d_hub={d_hub:.2f}, "
+#           f"d_rim={d_rim:.2f} (both must be ≤ 0.5 mm). "
+#           f"Check that start_pos is at r=hub_r, NOT mid_r, and that "
+#           f"spoke.Height == rim_inner_r - hub_r."
+#       )
+#
+#   # 4) MANDATORY self-check — the assembled wheel must be mostly empty.
+#   #    Place this AFTER the final Fuse, BEFORE doc.recompute() returns:
+#   import math as _m
+#   v_disc = _m.pi * (rim_outer_r ** 2) * rim_z      # equivalent solid disc
+#   v_wheel = wheel.Shape.Volume
+#   density = v_wheel / v_disc if v_disc > 0 else 0
+#   assert density < 0.30, (
+#       f"Wheel is too solid: density={density:.2f} (max 0.30) — "
+#       f"the Rim must be Part::Cut(outer, inner), NOT a single Part::Cylinder. "
+#       f"v_wheel={v_wheel:.0f} mm³, v_solid_disc={v_disc:.0f} mm³"
+#   )
+#
+# Expected density ≈ 0.05-0.15 (rim ~5 %, hub ~1 %, spokes ~0.5 %). The
+# assertion catches the common LLM bug of using `rim = Part.makeCylinder(R, h)`
+# (a full solid disc) right at exec time — the agent then sees the AssertionError
+# and re-emits the code with the canonical hollow rim.
+#
+# ----- Stepped railway axle (ГОСТ 33200-2014 РУ1-Ш) -----------------------
+# Wheelset axles are NOT plain cylinders. ГОСТ РУ1-Ш has FOUR distinct
+# diameter sections along Z:
+#   шейки           (journals, ends, under bearings):    ⌀ 130 mm
+#   предподступичные (transition, под лабиринт):         ⌀ 165 mm
+#   подступичные    (hub fits, под колёса):              ⌀ 194 mm
+#   средняя часть   (middle, between hubs):              ⌀ 165 mm
+# Total length 2294 mm. Typical lengths (mm, from one end inward):
+#   шейка 190 → предподступ. 100 → подступ. 250 → средняя 1214 → подступ. 250
+#   → предподступ. 100 → шейка 190
+# A plain Part::Cylinder of ⌀165 × 2294 IS WRONG — does not meet ГОСТ.
+#
+# CANONICAL stepped axle via Part::Revolution from a 2D step-profile wire:
+#   # half-profile in XZ plane (X = radius, Z = position):
+#   half_d = {                      # mm
+#       "neck":  130 / 2,           # 65
+#       "pre":   165 / 2,           # 82.5
+#       "hub":   194 / 2,           # 97
+#       "mid":   165 / 2,           # 82.5
+#   }
+#   # Cumulative Z boundaries (left → right):
+#   z0 = 0
+#   sections = [("neck", 190), ("pre", 100), ("hub", 250),
+#               ("mid", 1214), ("hub", 250), ("pre", 100), ("neck", 190)]
+#   pts = [FreeCAD.Vector(0, 0, z0)]    # axis start
+#   z = z0
+#   for kind, length in sections:
+#       r = half_d[kind]
+#       pts.append(FreeCAD.Vector(r, 0, z))         # step out (or stay)
+#       pts.append(FreeCAD.Vector(r, 0, z + length)) # constant radius run
+#       z += length
+#   pts.append(FreeCAD.Vector(0, 0, z))             # axis end
+#   pts.append(pts[0])                              # close on axis
+#   profile_wire = Part.makePolygon(pts)
+#   profile_face = Part.Face(profile_wire)
+#   rev = doc.addObject("Part::Revolution", "AxleRU1Sh")
+#   rev.Source = doc.addObject("Part::Feature", "AxleProfile")
+#   rev.Source.Shape = profile_face
+#   rev.Axis = (0, 0, 1)
+#   rev.Angle = 360.0
+#   doc.recompute()
+#
+#   # MANDATORY self-check — at least 3 distinct radius levels:
+#   distinct_radii = sorted({half_d[k] for k, _ in sections})
+#   assert len(distinct_radii) >= 3, (
+#       f"axle has only {len(distinct_radii)} distinct radii — "
+#       f"ГОСТ РУ1-Ш requires stepped journals (130), pre-hub (165), "
+#       f"hubs (194), middle (165). Plain cylinder is wrong."
+#   )
+#   assert rev.Shape.isValid() and rev.Shape.Volume > 0, \
+#       f"axle shape invalid or empty: vol={rev.Shape.Volume}"
+#
+# Verify: rev.Shape.isValid() AND rev.Shape.Volume > 0 AND
+#         bbox.ZLength ≈ 2294 mm AND ≥ 3 distinct radii along Z.
 
 ===========================================================================
 ## Blocked (runtime error if used):

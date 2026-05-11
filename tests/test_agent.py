@@ -700,6 +700,82 @@ def test_make_feedback_shape_invalid():
     assert "isValid()" in feedback
 
 
+def test_make_feedback_polygon_too_few_vertices():
+    """Sprint 5.22: 'Cannot create polygon because less than two vertices...'
+    → polygon-vertex guard hint."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback(
+        "Cannot create polygon because less than two vertices are given", "runtime"
+    )
+    assert "polygon" in feedback.lower()
+    assert "len(points)" in feedback
+    assert "Draft.make_polygon" in feedback
+
+
+def test_make_feedback_range_step_zero():
+    """Sprint 5.22: range() arg 3 must not be zero → defensive step pattern."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("range() arg 3 must not be zero", "runtime")
+    assert "step" in feedback.lower()
+    assert "max(1" in feedback
+    assert "rounding" in feedback.lower() or "int(" in feedback
+
+
+def test_make_feedback_face_from_wire():
+    """Sprint 5.22: 'Failed to create face from wire' → wire-validation checklist."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("Failed to create face from wire", "runtime")
+    assert "isClosed()" in feedback
+    assert "isValid()" in feedback
+    assert "planar" in feedback.lower() or "plane" in feedback.lower()
+
+
+def test_make_feedback_quantity_format_string():
+    """Sprint 5.22: 'unsupported format string passed to Base.Quantity.__format__'
+    → use `.Value` before f-string format spec."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback(
+        "unsupported format string passed to Base.Quantity.__format__", "runtime"
+    )
+    assert ".Value" in feedback
+    assert "f'{obj.Length.Value:.2f}'" in feedback or "f'{obj.Length.Value" in feedback
+
+
+def test_make_feedback_vector_three_floats_expected():
+    """Sprint 5.22: 'Either three floats, tuple or Vector expected' → nD → 3D
+    projection hint (recipe PART VI)."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback(
+        "Either three floats, tuple or Vector expected", "runtime"
+    )
+    assert "3" in feedback
+    assert "coord[:3]" in feedback or "[:3]" in feedback
+    assert "PART VI" in feedback
+
+
+def test_make_feedback_assertion_error_hint():
+    """Sprint 5.23: an AssertionError raised by a self-asserting recipe
+    (e.g. wheel density assert, axle radii-level assert) routes to a hint
+    that tells the LLM to fix the underlying invariant — and NOT to delete
+    the assertion."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback(
+        "AssertionError: Wheel is too solid: density=1.02 (max 0.30)", "runtime"
+    )
+    assert "AssertionError" in feedback or "assert" in feedback.lower()
+    assert "invariant" in feedback.lower() or "contract" in feedback.lower()
+    assert "Part::Cut" in feedback
+
+
+def test_make_feedback_assertion_starts_with_assert():
+    """Some Python exception strings start directly with 'assert ...'
+    without the AssertionError prefix."""
+    from neurocad.core.agent import _make_feedback
+    feedback = _make_feedback("assert len(edges_nd) == N * 2**(N-1)", "runtime")
+    assert "assert" in feedback.lower()
+    assert "contract" in feedback.lower() or "invariant" in feedback.lower()
+
+
 def test_run_truncated_response_detected_and_retries(qapp):
     """Sprint 5.18: stop_reason='length' → truncation feedback + retry, not a
     bogus SyntaxError-on-truncated-code silent loop.

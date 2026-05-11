@@ -432,6 +432,78 @@ def _make_feedback(
             "makePipeShell positional form: wire.makePipeShell([profile], True, True). "
             "Replace every integer 1/0 used as a boolean flag with True/False."
         )
+    if "cannot create polygon" in error_lower and "vertices" in error_lower:
+        return (
+            "Polygon creation failed: a polygon needs at least 2 (open) or 3 "
+            "(closed) vertices. Common causes: "
+            "(1) the vertex list was filtered down to 0/1 points by a `if`/`continue` "
+            "in the construction loop; "
+            "(2) Draft.make_polygon([pt]) — must be a list of ≥ 2 Vectors; "
+            "(3) Part.makePolygon([]) — empty list; "
+            "(4) Part.makeWireFromVertices used on a single vertex. "
+            "Guard the build with `if len(points) < 2: continue` and assert the "
+            "length BEFORE the constructor call."
+        )
+    if "range() arg 3 must not be zero" in error_lower:
+        return (
+            "ValueError: range() step must not be zero. The step argument was "
+            "computed as 0 — typically from rounding or `int(small_float)`. "
+            "Defensive pattern: `step = max(1, int(round(spacing)))` before "
+            "the range call. If you need a non-integer step, use a `while` "
+            "loop or `numpy.arange` semantics: "
+            "`x = start; while x < stop: ...; x += step` with `assert step != 0`."
+        )
+    if "failed to create face from wire" in error_lower:
+        return (
+            "Part.Face(wire) failed: OCCT could not build a face from the wire. "
+            "Common causes: "
+            "(1) wire is NOT closed — call `wire.isClosed()` (must be True); "
+            "(2) wire has self-intersections — `wire.isValid()` returns False; "
+            "(3) wire is non-planar — all vertices must lie in one plane "
+            "(use `Part.Plane().toShape().fix(0.01, 0.01)` to test); "
+            "(4) duplicate consecutive points — Part.Wire treats them as "
+            "degenerate edges. "
+            "Fix: ensure last vertex == first vertex (close the polygon), "
+            "drop duplicates, and project all points onto a single plane "
+            "before Part.Face(wire)."
+        )
+    if (
+        "unsupported format string passed to base.quantity" in error_lower
+        or "quantity.__format__" in error_lower
+    ):
+        return (
+            "TypeError: FreeCAD Quantity does not implement Python format-specs "
+            "(no `f'{q:.2f}'`). Use `.Value` first: `f'{obj.Length.Value:.2f}'` "
+            "or `f'{float(obj.Length.Value):.2f}'`. "
+            "Whole-string formatting also breaks: `str(obj.Length)` works but "
+            "yields `'24.0 mm'` (units included). Prefer the numeric path "
+            "when computing geometry; reserve string formatting for "
+            "human-readable logs only."
+        )
+    if "assertionerror" in error_lower or error_lower.strip().startswith("assert"):
+        return (
+            "AssertionError raised by an assertion in the generated code. "
+            "Read the error message — it tells you exactly which invariant "
+            "was violated (e.g. 'edge count: got 48 expected 80' or "
+            "'Wheel is too solid: density=1.02 (max 0.30)'). Re-emit the "
+            "code with the underlying logic fixed: iterate the correct "
+            "number of dimensions, build hollow rims via Part::Cut(outer, "
+            "inner) instead of solid Part::Cylinder, etc. Do NOT delete the "
+            "assertion — it is a contract."
+        )
+    if (
+        "either three floats" in error_lower
+        or ("vector" in error_lower and "expected" in error_lower)
+    ):
+        return (
+            "FreeCAD.Vector accepts exactly 3 scalars (x, y, z) — higher- or "
+            "lower-dimensional coordinates raise this TypeError. For nD math "
+            "visualizations: project to 3D first (drop extra dims or apply a "
+            "3×nD projection matrix). Pattern: "
+            "`v = FreeCAD.Vector(*coord[:3])` if you only need the first three "
+            "components. See PART VI of the system prompt (wireframe / "
+            "math-visualization recipe) for a worked nD → 3D example."
+        )
     return f"Execution failed: {error}"
 
 
