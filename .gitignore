@@ -14,3 +14,9 @@ __pycache__/
 .pytype/
 .tox/
 htmlcov/
+
+# Generated / spurious artifacts
+MagicMock/
+*.egg-info/
+/tmp/
+/tmp/dogfood_block_*.py

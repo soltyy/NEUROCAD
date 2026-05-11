@@ -351,6 +351,193 @@ def _worker_main() -> int:
             except Exception as exc:  # noqa: BLE001
                 reply({"event": "radial_profile", "profile": [], "error": f"{exc!r}"})
             continue
+        if cmd == "run_fea":
+            # Sprint 6.1 — real CalculiX FEA via femtools.ccxtools.
+            #
+            # Setup pipeline:
+            #   1. Find target solid (largest valid) and material (from payload)
+            #   2. Create FemAnalysis + ObjectsFem.makeSolverCalculiXCcxTools
+            #   3. Mesh via Fem.FemMesh.compute or Gmsh tools (if installed)
+            #   4. Apply ConstraintFixed (lowest-Z face) + ConstraintForce
+            #   5. Run ccx, read result.Stats / result.NodeStressXX
+            #   6. Report σ_max von Mises, displacement, factor of safety
+            #
+            # On any exception, fall back to a calibrated cantilever proxy
+            # so the agent path still flows. The exception message is
+            # included in the reply for debugging.
+            payload = req.get("payload") or {}
+            try:
+                largest = None
+                for o in doc.Objects:
+                    s = getattr(o, "Shape", None)
+                    if s is None or not getattr(s, "isValid", lambda: False)():
+                        continue
+                    v = getattr(s, "Volume", 0)
+                    if largest is None or v > largest[1]:
+                        largest = (o, v)
+                if largest is None:
+                    reply({"event": "fea_result", "ok": False,
+                           "error": "no valid solid for FEA"})
+                    continue
+                target, volume_mm3 = largest
+                # Sum applied force magnitudes (N)
+                f_total_N = 0.0
+                for load in payload.get("loads", []):
+                    if load.get("kind") == "force":
+                        f_total_N += abs(float(load.get("magnitude", 0)))
+                # Try real CalculiX run
+                solver = "cantilever-proxy"
+                sigma_mpa = None
+                disp_mm = None
+                fea_error = None
+                try:
+                    import Fem  # noqa: F401  type: ignore[import-not-found]
+                    from femtools import ccxtools  # type: ignore[import-not-found]
+                    from ObjectsFem import (  # type: ignore[import-not-found]
+                        makeAnalysis,
+                        makeSolverCalculixCcxTools,
+                        makeMaterialSolid,
+                        makeConstraintFixed,
+                        makeConstraintForce,
+                        makeMeshGmsh,
+                    )
+                    analysis = makeAnalysis(doc, f"FEA_{target.Name}")
+                    solver_obj = makeSolverCalculixCcxTools(doc, "Solver")
+                    analysis.addObject(solver_obj)
+                    mat = makeMaterialSolid(doc, "Steel_S275")
+                    mat.Material = {
+                        "Name": "Steel-S275",
+                        "YoungsModulus": "210000 MPa",
+                        "PoissonRatio": "0.30",
+                        "Density": "7850 kg/m^3",
+                        "YieldStrength": "275 MPa",
+                    }
+                    mat.References = [(target, "Solid1")]
+                    analysis.addObject(mat)
+                    # Mesh via Gmsh
+                    mesh_obj = makeMeshGmsh(doc, f"Mesh_{target.Name}")
+                    mesh_obj.Shape = target
+                    mesh_obj.CharacteristicLengthMax = max(
+                        float(target.Shape.BoundBox.DiagonalLength) / 30.0, 1.0
+                    )
+                    analysis.addObject(mesh_obj)
+                    from femmesh.gmshtools import GmshTools  # type: ignore[import-not-found]
+                    GmshTools(mesh_obj).create_mesh()
+                    # Fix bottom face (smallest Z centroid)
+                    faces = target.Shape.Faces
+                    if not faces:
+                        raise RuntimeError("no faces on target")
+                    bottom = min(
+                        range(len(faces)),
+                        key=lambda i: faces[i].CenterOfMass.z,
+                    )
+                    fixed = makeConstraintFixed(doc, "Fixed")
+                    fixed.References = [(target, f"Face{bottom + 1}")]
+                    analysis.addObject(fixed)
+                    # Apply force on top face (largest Z centroid)
+                    top = max(
+                        range(len(faces)),
+                        key=lambda i: faces[i].CenterOfMass.z,
+                    )
+                    force = makeConstraintForce(doc, "Force")
+                    force.References = [(target, f"Face{top + 1}")]
+                    force.Force = max(f_total_N, 1.0)
+                    force.Direction = (target, [f"Face{top + 1}"])
+                    force.Reversed = True
+                    analysis.addObject(force)
+                    doc.recompute()
+                    fea = ccxtools.FemToolsCcx(analysis, solver_obj)
+                    fea.purge_results()
+                    fea.update_objects()
+                    fea.setup_working_dir()
+                    fea.setup_ccx()
+                    msg = fea.check_prerequisites()
+                    if msg:
+                        raise RuntimeError(f"FEA prerequisites failed: {msg}")
+                    fea.write_inp_file()
+                    fea.ccx_run()
+                    fea.load_results()
+                    # Read stress from the last CCX result
+                    results = [
+                        r for r in doc.Objects
+                        if r.TypeId.startswith("Fem::FemResultObject")
+                    ]
+                    if results:
+                        last = results[-1]
+                        # Stats: [u_x_min, u_x_max, …, von_mises_min, von_mises_max, …]
+                        try:
+                            sigma_mpa = float(max(last.NodeStressXX or [0]))
+                            # Better: max von Mises if available
+                            if hasattr(last, "vonMises"):
+                                sigma_mpa = float(max(last.vonMises))
+                            disp_mm = float(max(last.DisplacementLengths or [0]))
+                        except Exception:
+                            pass
+                    solver = "calculix-ccx"
+                except Exception as fea_exc:  # noqa: BLE001
+                    fea_error = repr(fea_exc)
+                # Fallback to cantilever proxy if real ccx didn't yield σ_max
+                if sigma_mpa is None or disp_mm is None:
+                    bb = target.Shape.BoundBox
+                    L_mm = max(float(bb.XLength), float(bb.YLength), float(bb.ZLength))
+                    W_mm3 = max(volume_mm3 ** (2/3), 1.0)
+                    sigma_mpa = (f_total_N * L_mm) / W_mm3 if f_total_N > 0 else 0.0
+                    disp_mm = (
+                        (f_total_N * (L_mm ** 3))
+                        / (3 * 210000.0 * (W_mm3 / L_mm) + 1e-9)
+                        if f_total_N > 0 else 0.0
+                    )
+                fos = 275.0 / sigma_mpa if sigma_mpa > 0 else 99.0
+                reply({
+                    "event": "fea_result",
+                    "ok": fos >= 1.5,
+                    "sigma_max_mpa": float(sigma_mpa),
+                    "displacement_mm": float(disp_mm),
+                    "factor_of_safety": float(fos),
+                    "solver": solver,
+                    "fea_error": fea_error,
+                })
+            except Exception as exc:  # noqa: BLE001
+                reply({"event": "fea_result", "ok": False,
+                       "error": f"fea raised: {exc!r}"})
+            continue
+        if cmd == "verify_intent":
+            # Sprint 6.0: declarative contract verification inside the worker.
+            # The driver (which has no FreeCAD) sends the intent JSON; the
+            # worker re-hydrates it into a DesignIntent, calls the generic
+            # verifier against the live doc, and returns a serializable
+            # report. Used by agent_v2 via callbacks.on_verify_step.
+            payload = req.get("intent") or {}
+            try:
+                sys.path.insert(0, str(REPO_ROOT))
+                from neurocad.core.contract_verifier import verify as _verify
+                from neurocad.core.intent import DesignIntent as _DI
+                intent_obj = _DI.model_validate(payload)
+                report = _verify(doc, intent_obj)
+                reply({
+                    "event": "verify_result",
+                    "ok": bool(report.ok),
+                    "failures": [
+                        {"part": f.part, "feature": f.feature_kind,
+                         "reason": f.result.reason,
+                         "measured": f.result.measured}
+                        for f in report.failures
+                    ],
+                    "detail": [
+                        {"part": d.part, "feature": d.feature_kind,
+                         "ok": d.result.ok, "reason": d.result.reason,
+                         "measured": d.result.measured}
+                        for d in report.detail
+                    ],
+                })
+            except Exception as exc:  # noqa: BLE001
+                reply({
+                    "event": "verify_result", "ok": False,
+                    "failures": [{"part": "<verifier>", "feature": "<exception>",
+                                  "reason": f"verifier raised: {exc!r}"}],
+                    "detail": [],
+                })
+            continue
         if cmd == "joint_analysis":
             # Pairwise connectivity analysis for an assembly.
             #
@@ -534,6 +721,17 @@ class WorkerProxy:
             "name": name, "sample_n": sample_n,
             "r_max_hint": r_max_hint, "n_angles": n_angles,
         }, timeout_s=120.0)
+
+    def verify_intent(self, intent_dict: dict) -> dict:
+        """Sprint 6.0: send DesignIntent JSON to the worker, run
+        contract_verifier on the live doc, get a serializable report."""
+        return self._rpc({"cmd": "verify_intent", "intent": intent_dict},
+                          timeout_s=180.0)
+
+    def run_fea(self, payload: dict) -> dict:
+        """Sprint 6.1: run structural analysis on the worker doc."""
+        return self._rpc({"cmd": "run_fea", "payload": payload},
+                          timeout_s=300.0)
 
     def close(self) -> None:
         try:
@@ -1675,6 +1873,83 @@ class ScenarioResult:
     final_error: str | None = None
 
 
+def _run_one_v2(
+    scenario: Scenario,
+    proxy: WorkerProxy,
+    spec,
+    api_key: str,
+) -> ScenarioResult:
+    """Sprint 6.0 plan-driven agent_v2 run. Delegates verification of each
+    step to the worker via verify_intent RPC (the driver has no FreeCAD).
+    `on_question` is auto-answered with a sensible default since the headless
+    harness has no human; if LLM asks too many questions the run aborts."""
+    from neurocad.core import agent_v2 as agent_v2_mod
+    from neurocad.core.agent_v2 import AgentV2Callbacks
+    from neurocad.core.history import History
+
+    adapter = _build_adapter(spec, api_key)
+    history = History()
+    doc = _MockDoc()
+
+    def on_exec_needed(code: str, step_idx: int) -> dict:
+        try:
+            r = proxy.execute(code, timeout_s=scenario.timeout_s)
+        except Exception as exc:
+            return {"ok": False, "new_objects": [], "error": f"bridge error: {exc!r}"}
+        return {"ok": r.get("ok", False), "new_objects": r.get("new_objects", []),
+                "error": r.get("error")}
+
+    def on_verify_step(intent_dict: dict, step_idx: int) -> dict:
+        try:
+            return proxy.verify_intent(intent_dict)
+        except Exception as exc:
+            return {"ok": False, "failures": [{"part": "<bridge>", "feature": "<exception>",
+                                                 "reason": f"verify bridge error: {exc!r}"}]}
+
+    def on_question(q):
+        # Headless harness has no human; tell the LLM to proceed with
+        # reasonable defaults instead of cancelling.
+        return (
+            "Этот запрос обрабатывается в headless-режиме без участия "
+            "пользователя. Используй разумные defaults для всех "
+            "неуказанных параметров (например ISO 4014 для болтов, "
+            "крупный шаг резьбы для метрических, ГОСТ-стандартные "
+            "размеры для машиностроительных деталей) и продолжай. "
+            "Не задавай больше вопросов — сразу выдай <plan> и <code>."
+        )
+
+    callbacks = AgentV2Callbacks(
+        on_exec_needed=on_exec_needed,
+        on_verify_step=on_verify_step,
+        on_question=on_question,
+    )
+    start = time.monotonic()
+    proxy.reset()
+    try:
+        result = agent_v2_mod.run(scenario.prompt, doc, adapter, history, callbacks)
+    except Exception as exc:
+        return ScenarioResult(
+            scenario=scenario, passed=False,
+            detail=f"agent_v2.run raised: {exc!r}",
+            attempts=0, elapsed_s=time.monotonic() - start,
+        )
+    elapsed = time.monotonic() - start
+    inspect = proxy.inspect()
+    objs = inspect.get("objects", [])
+    n_attempts = sum(s.attempts for s in result.steps) or 1
+    passed, detail = scenario.success_check(result.ok, n_attempts, objs, result.error, proxy)
+    return ScenarioResult(
+        scenario=scenario,
+        passed=passed,
+        detail=detail + f" [v2: parts={len(result.intent.parts) if result.intent else 0}, "
+                       f"steps={len(result.steps)}]",
+        attempts=n_attempts,
+        elapsed_s=elapsed,
+        objects=objs,
+        final_error=result.error,
+    )
+
+
 def _run_one(
     scenario: Scenario,
     proxy: WorkerProxy,
@@ -1750,6 +2025,13 @@ def _driver_main(argv: list[str]) -> int:
                         help="Override model_id (default: from NeuroCAD config.json)")
     parser.add_argument("--worker-stderr", default=None,
                         help="Path to capture worker stderr (default: discarded)")
+    parser.add_argument("--use-v2", action="store_true",
+                        help="Use the plan-driven agent v2 (Sprint 6.0+) "
+                             "instead of the legacy single-pass agent.")
+    parser.add_argument("--compare", action="store_true",
+                        help="Run EVERY scenario twice (once on legacy v1, "
+                             "once on v2) and print a side-by-side comparison. "
+                             "Doubles cost — use during the observation period.")
     args = parser.parse_args(argv)
 
     if args.list:
@@ -1821,7 +2103,24 @@ def _driver_main(argv: list[str]) -> int:
         for sc in scenarios:
             print(f"=== {sc.code} — {sc.title}")
             print(f"    prompt: {sc.prompt!r}")
-            r = _run_one(sc, proxy, spec, api_key)
+            if args.compare:
+                # Sprint 6.0 migration helper: run BOTH agents on the same
+                # scenario, report side-by-side. Used to drive the default-flip
+                # decision per criteria in scripts/v2_observability.py.
+                r_v1 = _run_one(sc, proxy, spec, api_key)
+                r_v2 = _run_one_v2(sc, proxy, spec, api_key)
+                # Tag detail with both verdicts; keep v2 result as the "primary"
+                # for aggregate counts so we don't double-count scenarios.
+                r = r_v2
+                r.detail = (
+                    f"[v1: {'PASS' if r_v1.passed else 'FAIL'} {r_v1.attempts}att "
+                    f"{r_v1.elapsed_s:.1f}s | v2: {'PASS' if r_v2.passed else 'FAIL'} "
+                    f"{r_v2.attempts}att {r_v2.elapsed_s:.1f}s] {r_v2.detail}"
+                )
+            elif args.use_v2:
+                r = _run_one_v2(sc, proxy, spec, api_key)
+            else:
+                r = _run_one(sc, proxy, spec, api_key)
             results.append(r)
             mark = "PASS" if r.passed else "FAIL"
             print(f"    [{mark}] attempts={r.attempts} elapsed={r.elapsed_s:.1f}s — {r.detail}")

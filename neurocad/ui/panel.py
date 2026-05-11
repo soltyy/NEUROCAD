@@ -9,9 +9,10 @@ from ..core.audit import init_audit_log, audit_log
 from ..core.debug import log_error, log_info, log_warn
 from ..core.history import History
 from ..core.worker import LLMWorker
+from ..core.worker_v2 import LLMWorkerV2
+from .widgets import MessageBubble, StatusDot, TypedBubble  # noqa: F401 — TypedBubble used in v2 path
 from ..llm.registry import load_adapter
 from .compat import Qt, QtCore, QtWidgets
-from .widgets import MessageBubble, StatusDot
 
 
 class AdaptivePlainTextEdit(QtWidgets.QPlainTextEdit):
@@ -380,27 +381,45 @@ class CopilotPanel(QtWidgets.QDockWidget):
     def _add_message(self, role: str, text: str):
         """Append a message bubble to the chat area."""
         if role == "user":
-            # Create row-container: QWidget with horizontal layout
             container = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(container)
             row_layout.addStretch()
             bubble = MessageBubble(role, text)
             row_layout.addWidget(bubble)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            # Set maximum width relative to scroll viewport
             self._update_user_bubble_width(bubble)
+            # Track for resize-time width refresh
+            if not hasattr(self, "_user_bubbles"):
+                self._user_bubbles = []
+            self._user_bubbles.append(bubble)
             self._scroll_layout.addWidget(container)
         else:
             bubble = MessageBubble(role, text)
             self._scroll_layout.addWidget(bubble, alignment=Qt.AlignLeft)  # type: ignore[attr-defined]
-        # Scroll to bottom
         self._queue_scroll_to_bottom()
 
     def _update_user_bubble_width(self, bubble):
-        """Set maximum width of user bubble based on scroll viewport width."""
-        viewport_width = self._scroll_area.viewport().width()
-        max_width = int(viewport_width * 0.8)  # 80% of viewport
+        """Set maximum width of user bubble.
+
+        Sprint 6.0+ UX fix: previously hard-coded 80 % of the current viewport
+        width — which at submit-time was often the dock's initial small width
+        before the user enlarged it, leaving bubbles permanently narrow.
+        Now scales with the *whole* panel width (more reliable than viewport
+        during initial layout) and caps at 92 % with a 320-px floor.
+        """
+        ref_width = max(self._scroll_area.viewport().width(),
+                        self.widget().width())
+        max_width = max(320, int(ref_width * 0.92))
         bubble.setMaximumWidth(max_width)
+
+    def _refresh_user_bubble_widths(self):
+        """On panel resize, re-apply max-width to every existing user bubble
+        so old messages don't stay pinned to their submit-time narrow size."""
+        for b in getattr(self, "_user_bubbles", []) or []:
+            try:
+                self._update_user_bubble_width(b)
+            except Exception:
+                pass
 
     def _queue_scroll_to_bottom(self):
         """Mark the view as wanting to snap to bottom on the next layout pass.
@@ -553,16 +572,191 @@ class CopilotPanel(QtWidgets.QDockWidget):
             adapter_type=type(self._adapter).__name__,
         )
 
-        self._worker = LLMWorker(
-            on_chunk=self._on_chunk,
-            on_attempt=self._on_attempt,
-            on_status=self._on_status,
-            on_exec_needed=self._on_exec_needed,
-            on_done=self._on_worker_done,
-            on_error=self._on_worker_error,
-        )
+        # Sprint 6.0 — branch on user-selected agent architecture
+        from ..config.config import load as _load_cfg
+        use_v2 = bool(_load_cfg().get("use_agent_v2", False))
+        if use_v2:
+            self._worker = LLMWorkerV2(
+                on_message=self._on_typed_message,
+                on_status=self._on_status,
+                on_attempt=self._on_attempt,
+                on_exec_needed=self._on_exec_needed,
+                on_question_request=self._on_question_request,
+                on_verify_request=self._on_verify_request,
+                on_done=self._on_worker_done,
+                on_error=self._on_worker_error,
+            )
+        else:
+            self._worker = LLMWorker(
+                on_chunk=self._on_chunk,
+                on_attempt=self._on_attempt,
+                on_status=self._on_status,
+                on_exec_needed=self._on_exec_needed,
+                on_done=self._on_worker_done,
+                on_error=self._on_worker_error,
+            )
         self._worker.start(text, doc, self._adapter, self._history)
         self._request_watchdog.start(self._llm_timeout_ms())
+
+    # ---- Sprint 6.0 v2 hooks ------------------------------------------------
+
+    def _on_typed_message(self, msg) -> None:
+        """Route a v2 typed Message to the chat as a TypedBubble.
+
+        QUESTION bubbles wire their `answered` signal back to the worker
+        so user input unblocks the v2 agent loop.
+
+        Every typed message also resets the LLM watchdog: v2 makes multiple
+        LLM calls per request (clarify + plan + per-step retries), so
+        progress = the agent is alive, regardless of how long the total
+        request takes.
+        """
+        try:
+            from ..core.message import MessageKind
+            # USER bubble is already added by _on_submit before the worker
+            # starts; skip re-rendering to avoid the «Привет shown twice» bug.
+            if msg.kind == MessageKind.USER:
+                return
+            # CODE is an internal artefact (Python source for the executor);
+            # users don't read it. Skip rendering to keep the chat focused on
+            # progress (PLAN → SNAPSHOT → VERIFY) instead of noise.
+            if msg.kind == MessageKind.CODE:
+                return
+            bubble = TypedBubble(msg)
+            if msg.kind == MessageKind.QUESTION:
+                bubble.answered.connect(self._on_question_answered)
+            # PLAN gets pinned at the top of the chat (separate area). All
+            # other typed messages go into the scrolling history.
+            if msg.kind == MessageKind.PLAN:
+                self._pin_plan_bubble(bubble)
+            else:
+                self._scroll_layout.addWidget(bubble)
+                # Sprint 5.19 anchor: post-layout rangeChanged is the true
+                # bottom. _queue_scroll_to_bottom() drives both the rangeChanged
+                # path and a QTimer fallback. Direct setValue(maximum) here
+                # would race the layout and freeze on a stale bottom (visible
+                # to the user as «empty chat, messages scrolled up»).
+                self._queue_scroll_to_bottom()
+            # Restart watchdog on any v2 progress (except after a QUESTION,
+            # which is handled by _on_question_request → stop).
+            if (msg.kind != MessageKind.QUESTION
+                    and self._request_watchdog is not None
+                    and self._worker is not None
+                    and self._worker.is_running()):
+                self._request_watchdog.start(self._llm_timeout_ms())
+        except Exception as exc:  # noqa: BLE001
+            log_error("panel.typed_message", "failed to render", error=str(exc))
+
+    def _pin_plan_bubble(self, bubble) -> None:
+        """Sprint 6.0+ UX: the plan stays pinned at the top of the panel,
+        visible above the chat, until the run completes. On completion
+        (_on_worker_done) the pin is cleared.
+
+        Implementation: a dedicated container above the chat scroll area
+        holds the currently-pinned plan widget. Only one plan can be
+        pinned at a time — a new plan replaces the old one."""
+        # Lazy-create the pin container at the same parent as the scroll area
+        pin = getattr(self, "_pin_container", None)
+        if pin is None:
+            pin = QtWidgets.QWidget(self.widget())
+            pin_layout = QtWidgets.QVBoxLayout(pin)
+            pin_layout.setContentsMargins(0, 0, 0, 0)
+            pin_layout.setSpacing(0)
+            self._pin_container = pin
+            self._pin_layout = pin_layout
+            # Insert above the scroll area in the main vertical layout
+            main_layout = self.widget().layout()
+            # Find scroll area position and insert pin just before it
+            for i in range(main_layout.count()):
+                if main_layout.itemAt(i).widget() is self._scroll_area:
+                    main_layout.insertWidget(i, pin)
+                    break
+        # Clear previous plan
+        for i in reversed(range(self._pin_layout.count())):
+            old = self._pin_layout.itemAt(i).widget()
+            if old is not None:
+                old.setParent(None)
+                old.deleteLater()
+        self._pin_layout.addWidget(bubble)
+
+    def _unpin_plan(self) -> None:
+        """Move the pinned plan into the regular scroll history (if any)
+        and hide the pin container. Called from _on_worker_done."""
+        pin = getattr(self, "_pin_container", None)
+        if pin is None:
+            return
+        # Move every widget currently pinned into the scrollable history
+        for i in reversed(range(self._pin_layout.count())):
+            w = self._pin_layout.itemAt(i).widget()
+            if w is not None:
+                self._pin_layout.removeWidget(w)
+                self._scroll_layout.addWidget(w)
+        pin.hide()
+        self._queue_scroll_to_bottom()
+
+    def _on_question_request(self, msg) -> None:
+        """The v2 worker dispatched a blocking question — bubble was already
+        added via on_typed_message; pause the LLM watchdog while the user
+        thinks. It will be restarted when the user answers (next LLM call
+        resumes the request)."""
+        log_info("panel.question", "v2 worker requested user input — pausing watchdog",
+                 preview=msg.text[:120])
+        if self._request_watchdog is not None:
+            self._request_watchdog.stop()
+
+    def _on_question_answered(self, answer: str) -> None:
+        """User clicked an option / pressed Enter on a QUESTION bubble.
+        Forwards the answer to the worker (un-blocks _answer_event) and
+        restarts the LLM watchdog so the resumed request gets a fresh timer."""
+        if self._worker is None or not isinstance(self._worker, LLMWorkerV2):
+            return
+        log_info("panel.question.answered", "forwarding answer — resuming watchdog",
+                 preview=answer[:80])
+        if self._request_watchdog is not None:
+            self._request_watchdog.start(self._llm_timeout_ms())
+        self._worker.receive_answer(answer)
+
+    def _on_verify_request(self, intent_dict, step_idx):
+        """Sprint 6.0+ thread-safety: contract_verifier touches FreeCAD APIs
+        (doc.getObject, Shape.isInside, ...) which are NOT thread-safe.
+        The worker hands off here, this method runs on the Qt MAIN thread,
+        results go back via worker.receive_verify_result."""
+        log_info("panel.verify", "running contract_verifier on main thread",
+                 step_idx=step_idx)
+        try:
+            from ..core.contract_verifier import verify as _verify
+            from ..core.intent import DesignIntent
+            intent = DesignIntent.model_validate(intent_dict)
+            doc = get_active_document()
+            if doc is None:
+                result = {"ok": False,
+                          "failures": [{"part": "<doc>", "feature": "<lookup>",
+                                         "reason": "no active document"}]}
+            else:
+                report = _verify(doc, intent)
+                result = {
+                    "ok": bool(report.ok),
+                    "failures": [
+                        {"part": f.part, "feature": f.feature_kind,
+                         "reason": f.result.reason,
+                         "measured": f.result.measured}
+                        for f in report.failures
+                    ],
+                    "detail": [
+                        {"part": d.part, "feature": d.feature_kind,
+                         "ok": d.result.ok, "reason": d.result.reason,
+                         "measured": d.result.measured}
+                        for d in report.detail
+                    ],
+                }
+        except Exception as exc:  # noqa: BLE001
+            log_error("panel.verify", "contract_verifier raised", error=str(exc))
+            result = {"ok": False,
+                      "failures": [{"part": "<verifier>",
+                                      "feature": "<exception>",
+                                      "reason": f"verifier raised: {exc!r}"}]}
+        if self._worker is not None and isinstance(self._worker, LLMWorkerV2):
+            self._worker.receive_verify_result(result)
 
     def _on_chunk(self, chunk: str):
         """Append a chunk of LLM response to the assistant message."""
@@ -639,28 +833,46 @@ class CopilotPanel(QtWidgets.QDockWidget):
             self._worker.receive_exec_result(result_data)
 
     def _on_worker_done(self, result):
-        """Handle completion of the worker."""
+        """Handle completion of the worker.
+
+        Robust against both AgentResult (legacy v1, has .attempts +
+        .new_objects) and AgentV2Result (Sprint 6.0+, has .steps and
+        nested new_objects per step) — DO NOT crash here, the Qt
+        dispatcher swallows the exception and the UI freezes.
+        """
         if self._request_watchdog is not None:
             self._request_watchdog.stop()
-        log_info(
-            "panel.done",
-            "worker finished",
-            ok=result.ok,
-            attempts=result.attempts,
-            error=result.error,
-            new_objects=result.new_objects,
-        )
+        # Normalise: derive `attempts` and `new_objects` from whichever
+        # result shape we got.
+        attempts = getattr(result, "attempts", None)
+        new_objects = getattr(result, "new_objects", None)
+        if attempts is None and hasattr(result, "steps"):
+            # v2: sum attempts per step
+            attempts = sum(s.attempts for s in result.steps) or 1
+        if new_objects is None and hasattr(result, "steps"):
+            new_objects = []
+            for s in result.steps:
+                new_objects.extend(s.new_objects or [])
+        attempts = attempts or 0
+        new_objects = new_objects or []
+        log_info("panel.done", "worker finished",
+                 ok=result.ok, attempts=attempts, error=result.error,
+                 new_objects=new_objects)
         self._worker = None
-        self._last_new_objects = result.new_objects if result.ok else []
+        self._last_new_objects = new_objects if result.ok else []
         self._set_busy(False)
         if not result.ok:
             self._add_message(
                 "feedback",
-                f"Failed after {result.attempts} attempts: {result.error}",
+                f"Failed after {attempts} attempt(s): {result.error}",
             )
         else:
-            self._add_message("feedback", f"Success! Created {len(result.new_objects)} object(s).")
-        # Clear current assistant bubble
+            self._add_message("feedback",
+                              f"Success! Created {len(new_objects)} object(s).")
+        # Sprint 6.0+ UX: when the run finishes, move the pinned plan into
+        # the regular history so the chat stays in chronological order for
+        # future requests.
+        self._unpin_plan()
         if hasattr(self, "_current_assistant_bubble"):
             del self._current_assistant_bubble
 
@@ -718,9 +930,14 @@ class CopilotPanel(QtWidgets.QDockWidget):
             self._input._adjust_height()
 
     def resizeEvent(self, event):
-        """Update container max height when panel is resized."""
+        """Update container max height and refresh user-bubble widths
+        when the panel is resized."""
         super().resizeEvent(event)
         self._update_container_max_height()
+        try:
+            self._refresh_user_bubble_widths()
+        except Exception:
+            pass
 
     def showEvent(self, event):
         """Ensure the dock is raised when shown."""

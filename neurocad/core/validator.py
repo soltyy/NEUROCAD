@@ -281,6 +281,18 @@ def validate(obj) -> ValidationResult:
 
     # Stage 3: anti-pattern checks. Skip intermediates (objects consumed by
     # another) — they are mid-pipeline constructions, not finished parts.
+    #
+    # DEPRECATION (Sprint 6.0+): when the user is on agent_v2, the
+    # DesignIntent + generic contract_verifier already provide stronger
+    # checks. Per-class anti-patterns become redundant noise. Gate them
+    # behind a config flag so they can be disabled per-user.
+    try:
+        from ..config.config import load as _load_cfg
+        _legacy_on = bool(_load_cfg().get("legacy_anti_patterns", True))
+    except Exception:
+        _legacy_on = True
+    if not _legacy_on:
+        return ValidationResult(ok=True)
     if _is_intermediate(obj):
         return ValidationResult(ok=True)
     wheel_anti = _check_wheel_anti_pattern(obj, shape_to_check)

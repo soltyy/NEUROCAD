@@ -128,6 +128,31 @@ class SettingsDialog(QtWidgets.QDialog):
         auth_group.setLayout(auth_layout)
         layout.addWidget(auth_group)
 
+        # Sprint 6.0 — agent v2 toggle
+        v2_group = QtWidgets.QGroupBox("Agent architecture")
+        v2_layout = QtWidgets.QVBoxLayout()
+        self._use_v2_check = QtWidgets.QCheckBox(
+            "Use plan-driven agent v2 (Sprint 6.0, experimental)"
+        )
+        self._use_v2_check.setToolTip(
+            "Multi-pass agent: clarifies missing info, builds a structured "
+            "DesignIntent plan, executes step-by-step with a generic contract "
+            "verifier on each step. Falls back to legacy single-pass agent "
+            "when unchecked."
+        )
+        v2_layout.addWidget(self._use_v2_check)
+        self._legacy_anti_check = QtWidgets.QCheckBox(
+            "Enable legacy per-class anti-patterns (wheel/axle/gear/house)"
+        )
+        self._legacy_anti_check.setToolTip(
+            "Sprint 5.x validator anti-patterns. v2 users typically disable "
+            "these — the DesignIntent verifier replaces them. Kept on by "
+            "default for backward compatibility."
+        )
+        v2_layout.addWidget(self._legacy_anti_check)
+        v2_group.setLayout(v2_layout)
+        layout.addWidget(v2_group)
+
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
         self._save_btn = QtWidgets.QPushButton("Save")
@@ -165,6 +190,8 @@ class SettingsDialog(QtWidgets.QDialog):
         """Populate UI from config and show per-model key-storage status."""
         self._timeout_spin.setValue(float(self._config.get("timeout", 180.0)))
         self._max_objects_spin.setValue(int(self._config.get("max_created_objects", 1000)))
+        self._use_v2_check.setChecked(bool(self._config.get("use_agent_v2", False)))
+        self._legacy_anti_check.setChecked(bool(self._config.get("legacy_anti_patterns", True)))
 
         # Pick active model: explicit model_id → legacy inference → default.
         mid = self._config.get("model_id") or model_registry.default_model_id()
@@ -248,6 +275,8 @@ class SettingsDialog(QtWidgets.QDialog):
         merged["model_id"] = spec.id if spec else model_registry.default_model_id()
         merged["timeout"] = timeout
         merged["max_created_objects"] = max_objects
+        merged["use_agent_v2"] = bool(self._use_v2_check.isChecked())
+        merged["legacy_anti_patterns"] = bool(self._legacy_anti_check.isChecked())
 
         return merged, api_key, spec
 

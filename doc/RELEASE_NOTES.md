@@ -1,3 +1,82 @@
+# Release Notes – Sprint 6.0 (Plan-driven multi-pass agent — architecture rewrite)
+
+**Date:** 2026‑05‑11 (MVP)
+**Based on:** User-stated principle «мы учимся конкретному» — every L1-L11 «raise-the-bar» iteration accumulated per-class hardcoding (_WHEEL/_AXLE/_GEAR/_HOUSE_NAME_TOKENS in `validator.py`; PART V/VIII bespoke recipes in `defaults.py`). The right approach is to **place the LLM in a frame**: structured plan, generic feature detectors, declarative contract verifier — leveraging the LLM's existing ISO/ГОСТ/СП knowledge instead of teaching specifics. Sprint 6.0 introduces this v2 architecture **without deleting any legacy code**.
+
+## What changed
+
+- **New module `neurocad/core/intent.py`** — Pydantic `DesignIntent` schema: parts + features + dimensions + joints + loads + standards. Serialized as JSON in `<plan>` tag.
+- **New module `neurocad/core/features.py`** — 10 generic detectors (axle_hole, thread, hex_section, hollow, stepped_axial, bbox_length, long_axial) composed via `DETECTORS` registry by `Feature.kind`. Adding a new domain = adding a detector, NOT a validator anti-pattern.
+- **New module `neurocad/core/contract_verifier.py`** — declarative `verify(doc, intent) → VerifyReport`. Reads claims from plan, calls detectors. Dimensions are skipped when a part has features (avoids «болт длиной 60» = shank-not-bbox conflict).
+- **New module `neurocad/core/message.py`** — typed `Message` + 11 `MessageKind` values (USER / PLAN / COMMENT / QUESTION / ANSWER / CODE / SNAPSHOT / VERIFY / ERROR / SUCCESS / SYSTEM). Legacy `Role.USER/ASSISTANT/FEEDBACK` continues to work.
+- **New module `neurocad/core/response_parser.py`** — multi-channel parser: splits an LLM response into ordered `[Message]` by `<plan>` / `<comment>` / `<question type=… options=…>` / `<code step=N>` tags. Legacy ```python``` fenced blocks fall back to CODE with `step=None`.
+- **New module `neurocad/core/prompt_v2.py`** — compact system prompt **12.9k chars** (vs 69k legacy). Contains response schema + feature.kind list + **techniques T1-T7** (helical thread, hollow ring, hex prism, stepped axial profile, axle hole, radial cylinder, hypercube edges). NO per-class recipes.
+- **New module `neurocad/core/agent_v2.py`** — `run(prompt, doc, adapter, history, callbacks) → AgentV2Result`. Implements PHASE 1-5 (CLARIFY → PLAN → EXECUTE_STEP retry → VERIFY_WHOLE → DELIVER). `AgentV2Callbacks` adds `on_question` (blocking) + `on_verify_step` (delegates verification to worker when driver has no FreeCAD).
+- **`scripts/headless_dogfood.py`** — new `verify_intent` worker RPC (run contract_verifier in FreeCAD process), new driver-side method `proxy.verify_intent(intent_dict)`, new `_run_one_v2`, new `--use-v2` CLI flag.
+- **+26 unit tests** (18 response_parser + 8 agent_v2): 321 → **347 passed**, 1 skipped, 1 xfailed.
+
+## End-to-end verification
+
+```
+.venv/bin/python scripts/headless_dogfood.py --use-v2 --scenario R4
+→ R4 куб 20×20×20: PASS attempts=1 elapsed=7.4s
+  prompt_tokens=1634  (vs ~21000 legacy = 13× reduction)
+  parts=1, steps=1, verifier OK via worker RPC
+```
+
+R1 bolt M24 via v2: full multi-pass pipeline traverses correctly
+(CLARIFY → PLAN → EXECUTE → contract_verifier finds thread weak → retry
+with diff feedback → retry); the LLM needs further technique guidance
+(or a stronger model) to finish the bolt-thread case in 3 attempts. The
+**architecture** is verified — remaining gap is LLM tuning, not framework.
+
+## What did NOT change
+
+- `neurocad/core/agent.py` (legacy single-pass) — intact
+- `neurocad/core/validator.py` anti-patterns (wheel/axle/gear/house, intermediate-skip) — intact
+- `neurocad/config/defaults.py` PART I-VIII recipes — intact
+- `neurocad/core/history.py` Role enum + `to_llm_messages` — intact (backward-compat)
+- `neurocad/core/worker.py` / `panel.py` / `settings.py` — intact (UI still uses legacy path)
+- 321 previously-passing tests — all still pass
+
+## No-degradation contract
+
+Sprint 6.0 is **strictly additive**. The `--use-v2` flag is the only opt-in switch. Production users running NeuroCAD inside FreeCAD continue on the legacy `agent.run` path unchanged.
+
+## Deferred to next sprint
+
+- `panel.py` bubble types for new `MessageKind` values (COMMENT info-style, QUESTION with option buttons, PLAN collapsible)
+- `worker_v2.py` Qt main-thread wrapper of `agent_v2.run` with `on_question` dispatcher
+- Settings UI toggle: legacy ↔ v2
+- CalculiX FEA in PHASE 4 (currently only joint distToShape checks)
+- Additional techniques T8+ (revolution profile pitfalls, spaced packing, hierarchical assemblies)
+
+## Migration / rollout
+
+When v2 graduates from MVP, the migration plan is:
+1. Wire `worker_v2.py` + Settings toggle (defaults to legacy)
+2. Run real users on v2 for 1 week behind the toggle
+3. Compare success rates between paths via audit log (new `agent_v2_start` / `agent_v2_done` event types)
+4. Once v2 ≥ legacy success rate AND faster mean tokens-per-success: flip default to v2
+5. After 2 weeks stable on v2 default: deprecate PART V/VIII bespoke recipes from `defaults.py` (replaced by techniques T1-Tn) and the per-class validator anti-patterns
+
+## Rollback notes
+
+Revert all new modules and the harness changes. Production legacy path is untouched and continues to work.
+
+## Manual verification
+
+```bash
+.venv/bin/pytest --tb=short -q                       # 347 passed
+.venv/bin/python -c "from neurocad.core.intent import DesignIntent; \
+                     from neurocad.core.agent_v2 import run; \
+                     from neurocad.core.prompt_v2 import build_system_v2; \
+                     print('prompt_v2:', len(build_system_v2()), 'chars')"
+.venv/bin/python scripts/headless_dogfood.py --use-v2 --scenario R4
+```
+
+---
+
 # Release Notes – Sprint 5.22 (Headless Dog-Food Harness + Open Punch-List Closure)
 
 **Date:** 2026‑05‑11

@@ -1,4 +1,4 @@
-# NeuroCad · Sprint Plans v2.4
+# NeuroCad · Sprint Plans v3.0
 **Дата:** 2026-04-18 · Основа: ARCH v0.3 + ghbalf/freecad-ai production паттерны + фактическое состояние репозитория
 
 > **Scope note (post-Sprint 5.7):** MVP-ограничения сняты. Ранее в Sprint 1–4 мы
@@ -44,6 +44,7 @@
 - [Sprint 5.20 — 3D Text Recipe + NameError "Forgot to Fetch" + ViewObject Attribute Feedback](#sprint-520--3d-text-recipe--nameerror-forgot-to-fetch--viewobject-attribute-feedback)
 - [Sprint 5.21 — Audit Log Processing-State Lifecycle](#sprint-521--audit-log-processing-state-lifecycle)
 - [Sprint 5.22 — Headless Dog-Food Harness + Open Punch-List Closure (5 feedback branches)](#sprint-522--headless-dog-food-harness--open-punch-list-closure-5-feedback-branches)
+- [Sprint 6.0 — Plan-driven multi-pass agent (architecture rewrite)](#sprint-60--plan-driven-multi-pass-agent-architecture-rewrite)
 - [Сводная таблица: что изменилось от v0.1 → v2.2](#сводная-таблица-что-изменилось-от-v01--v22)
 
 ---
@@ -1457,6 +1458,103 @@ Tiered кросс-платформенное хранилище API-ключа, 
 - `neurocad.core.agent.AgentCallbacks` (Sprint 2/5.6) — `on_exec_needed` callback contract, который harness реализует через JSON-RPC.
 - `neurocad.core.executor.execute(code, doc)` (Sprint 2/5.4) — exec sandbox, дёргается worker'ом без изменений.
 - `scripts/audit_state.py classify()` (Sprint 5.21) — расширяется новыми правилами, не переписывается.
+
+---
+
+# Sprint 6.0 — Plan-driven multi-pass agent (architecture rewrite)
+**Нед. 20 · Python 3.11 · FreeCAD 1.1**
+**Статус:** MVP (2026-05-11)
+
+**Контекст:** к концу Sprint 5.x проект накопил 20-сценарную бенч-сюиту и L1-L11 жёсткие чекеры. Каждый «уровень» добавлял per-class anti-patterns в `validator.py` (`_WHEEL_NAME_TOKENS`, `_AXLE_NAME_TOKENS`, `_GEAR_NAME_TOKENS`, `_HOUSE_NAME_TOKENS`) и bespoke recipes в системный промпт (PART V/VIII bolt/gear/wheel/axle/house/kitchen). Пользователь идентифицировал: **«это не верный подход — мы учимся конкретному»**. Per-class hardcoding не масштабируется — нужна архитектура которая ловит инвариантность из знаний LLM (ISO/ГОСТ/СП), а не из cookbook.
+
+**Цель:** перепроектировать агента под жизненный цикл:
+1. **CLARIFY** — LLM решает достаточно ли информации; если критически не хватает (размер/стандарт/материал под нагрузкой) — задаёт **один** `<question>` пользователю.
+2. **PLAN** — LLM формирует структурированный `DesignIntent` (parts + features + dimensions + joints + loads), сериализуется в `<plan>` тег.
+3. **EXECUTE_STEP** — для каждой Part в плане отдельный inner-loop: LLM генерирует код в `<code step="N">`, executor исполняет, generic `contract_verifier` проверяет claims из plan, на fail — diff-фидбэк → retry (до 3-х).
+4. **VERIFY_WHOLE** — global joint checks (distToShape между Parts), будущее FEA через CalculiX.
+5. **DELIVER** — результат + plan persists в History для follow-up запросов.
+
+**Что НЕ меняется (legacy сохранён, нет deletions):** `agent.run`, validator anti-patterns, PART I-VIII recipes — всё работает. v2 — параллельная code path, переключается на этапе headless через `--use-v2`.
+
+## Архитектура
+
+```
+                          ┌──────────────┐
+                          │ User prompt  │
+                          └──────┬───────┘
+                                 ↓
+       ┌─────────────────────────────────────────────────┐
+       │ PHASE 1 — CLARIFY  (agent_v2._clarify_loop)      │
+       │   _llm_call → response_parser.parse →            │
+       │   if <question> → callbacks.on_question(q) →     │
+       │   user answers → loop                            │
+       └────────────────────┬────────────────────────────┘
+                            ↓
+       ┌─────────────────────────────────────────────────┐
+       │ PHASE 2 — PLAN  (extract_plan ⇒ DesignIntent)    │
+       └────────────────────┬────────────────────────────┘
+                            ↓
+                   ┌────────┴────────┐
+                   ↓                 │
+       ┌────────────────────────────┴────────────────┐
+       │ PHASE 3 — EXECUTE_STEP per part              │
+       │   on_exec_needed(code, step) →               │
+       │   on_verify_step(intent_part, step) →        │
+       │     contract_verifier.verify(doc, sub_intent)│
+       │   if fail → diff-feedback → re-prompt step    │
+       │   max 3 retries                              │
+       └────────────────────┬────────────────────────┘
+                            ↓
+       ┌─────────────────────────────────────────────────┐
+       │ PHASE 4 — VERIFY_WHOLE  (joints + future FEA)    │
+       └────────────────────┬────────────────────────────┘
+                            ↓
+                       ┌────┴────┐
+                       │ DELIVER │
+                       └─────────┘
+```
+
+## Модули
+
+| Новый файл | Назначение |
+|---|---|
+| `neurocad/core/intent.py` | Pydantic `DesignIntent` / `Part` / `Feature` / `Joint` / `Load` / `Quantity` / `Standard` |
+| `neurocad/core/features.py` | 10 generic detectors (axle_hole, thread, hex_section, hollow, stepped_axial, bbox_length, long_axial) с registry. Domain-knowledge **снаружи** агента |
+| `neurocad/core/contract_verifier.py` | Declarative `verify(doc, intent) → VerifyReport`. Читает claims из intent, дёргает detectors. **Dimensions пропускаются если у part есть features** (избегает bbox-vs-semantic конфликта типа «болт длиной 60» = шанк, не total) |
+| `neurocad/core/message.py` | Typed `Message` + `MessageKind` (USER / PLAN / COMMENT / QUESTION / ANSWER / CODE / SNAPSHOT / VERIFY / ERROR / SUCCESS / SYSTEM) |
+| `neurocad/core/response_parser.py` | `parse(raw) → list[Message]`. `<plan>` / `<comment>` / `<question type=… options=…>` / `<code step=N>` + legacy fenced fallback |
+| `neurocad/core/prompt_v2.py` | Compact system prompt **13k chars** (vs 69k legacy) — schema + feature.kind + techniques T1-T7 (helical thread, hollow ring, hex prism, stepped axial, axle hole, radial cylinder, hypercube edges) |
+| `neurocad/core/agent_v2.py` | Phase 1-5 orchestrator + `AgentV2Callbacks` (on_message, on_question, on_verify_step, on_exec_needed) + `AgentV2Result` |
+| `scripts/headless_dogfood.py` | Worker RPC `verify_intent` + driver `--use-v2` флаг + `_run_one_v2` |
+| Tests | +18 parser + 8 agent_v2 = **+26 unit tests, 321 → 347 passed** |
+
+## Конкретные improvements vs legacy
+
+| Метрика | Legacy v1 | v2 |
+|---|---|---|
+| System prompt | 69k chars (≈ 21k input tokens) | **13k chars (≈ 1.6k input tokens)** — 13× меньше |
+| Anti-patterns | 4 hardcoded (_WHEEL/_AXLE/_GEAR/_HOUSE_NAME_TOKENS) | 0 hardcoded — все claims извлекаются из plan |
+| Recipe-классы в prompt | PART V/VIII bespoke для bolt/gear/wheel/axle/house/kitchen | **Только techniques T1-T7** (как сделать helix-sweep, hollow rim, stepped revolution — applicable для ЛЮБОГО класса) |
+| Добавление нового domain (двутавр / турбина / труба) | +recipe в defaults.py + anti-pattern в validator.py + чекер в харнессе | **0 строк кода**. LLM знает ГОСТ/DIN, plan содержит feature claims, generic verifier их проверяет |
+| Уточняющие вопросы | Нет | `<question>` блокирует агента, callbacks.on_question(q) → пользователь отвечает |
+| Per-step retry | Один retry-loop на всю генерацию | Independent retry per part (max 3) с targeted diff-фидбэком |
+| Plan persistence | Нет | DesignIntent в History — следующий запрос видит предыдущий план |
+| End-to-end PASS R4 cube | 1 attempt 2.5s, 21k tokens | **1 attempt 7.4s, 1.6k tokens** (PASS verified) |
+
+## Что НЕ закрыто в Sprint 6.0
+
+- UI bubble-типы в `panel.py` для новых `MessageKind` (COMMENT инфо-стиль, QUESTION с кнопками опций, PLAN collapsible, SNAPSHOT/VERIFY status-row)
+- `worker_v2.py` wrapper для Qt main-thread dispatch agent_v2.run
+- Settings toggle legacy ↔ v2
+- CalculiX FEA в PHASE 4 (только joint check сейчас, FEA - будущий sprint)
+- LLM-tuning: техники T1-T7 покрывают базовые pitfalls, но DeepSeek на «болт M24 с резьбой» пока за 3 попытки не справляется (R4 cube — PASS, R1 bolt — требует более сильную модель ИЛИ дополнительные техники T8+)
+
+## Правила Sprint 6.0
+
+- НИ ОДНОГО deletion из legacy code path: agent.run, validator anti-patterns, PART V/VIII — всё работает параллельно
+- v2 переключается явно (`--use-v2` в харнессе, будущий Settings toggle в UI)
+- DesignIntent — единственный «контракт» между LLM-1 (planner) и verifier; никаких name-token blacklists/whitelists в generic слое
+- Pytest 321 → 347 без регрессий; ответ без TASK CODE = невалиден
 
 ---
 

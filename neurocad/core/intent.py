@@ -23,9 +23,10 @@ than silently passing junk to LLM-2.
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +43,25 @@ class Quantity(BaseModel):
         pressure    → megapascals (= N/mm²)
         time        → seconds
         angle       → degrees
+
+    Accepts LLM-friendly shorthand: a plain number (`12000`) or string
+    («12 mm», «4.5», «90 deg») is auto-coerced to `Quantity(value=…, unit=…)`.
     """
     value: float
     unit: str = "mm"
     tol: float | None = Field(default=None,
                               description="± tolerance in same unit; None=default ±5 %")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_scalar(cls, data: Any) -> Any:
+        if isinstance(data, (int, float)):
+            return {"value": float(data), "unit": "mm"}
+        if isinstance(data, str):
+            m = re.match(r"^\s*([+\-]?\d*\.?\d+)\s*([a-zA-Zа-яА-Я°]*)\s*$", data)
+            if m:
+                return {"value": float(m.group(1)), "unit": (m.group(2) or "mm")}
+        return data
 
 
 class Standard(BaseModel):

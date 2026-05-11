@@ -179,6 +179,13 @@ def init_audit_log(config: dict[str, Any]) -> None:
 
     _AUDIT_LOGGER = logger
 
+    # Sprint 6.2: SQLite sink alongside JSONL.
+    try:
+        from . import audit_db
+        audit_db.init(log_dir / "audit-events.db")
+    except Exception:
+        pass
+
 
 def audit_log(event_type: str, data: dict[str, Any], correlation_id: str | None = None) -> None:
     """Write an audit entry if audit logging is enabled.
@@ -212,6 +219,19 @@ def audit_log(event_type: str, data: dict[str, Any], correlation_id: str | None 
         _AUDIT_LOGGER.info(json.dumps(entry, separators=(",", ":")))
     except Exception:
         # If logging fails, do not crash the application
+        pass
+    # Sprint 6.2: also write to SQLite — indexed queries become possible.
+    try:
+        from . import audit_db
+        if audit_db.is_enabled():
+            audit_db.insert_event(
+                timestamp=entry["timestamp"],
+                event_type=entry["event_type"],
+                correlation_id=entry["correlation_id"],
+                processing_state=entry["processing_state"],
+                data=entry["data"],
+            )
+    except Exception:
         pass
 
 
@@ -273,4 +293,17 @@ def update_processing_state(
             updated += 1
 
     _os.replace(tmp, log_path)
+    # Sprint 6.2: mirror the update into the SQLite DB if it's open. SQLite
+    # holds the authoritative view; the JSONL above is the archive copy.
+    try:
+        from . import audit_db
+        if audit_db.is_enabled():
+            audit_db.update_processing_state(
+                new_state,
+                timestamp=timestamp,
+                correlation_id=correlation_id,
+                event_type=event_type,
+            )
+    except Exception:
+        pass
     return updated

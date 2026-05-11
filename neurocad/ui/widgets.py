@@ -186,6 +186,217 @@ class MessageBubble(QtWidgets.QFrame):
         self._update_display()
 
 
+class TypedBubble(QtWidgets.QFrame):
+    """Sprint 6.0+: a chat bubble for typed `Message` instances.
+
+    Renders one of:
+      * COMMENT  — italic gray text, left-border, no avatar (rationale)
+      * PLAN     — collapsible card with «Plan: N parts» summary, click expands JSON
+      * QUESTION — bold text + option-buttons (or text-input for free type);
+                   on click emits `answered(text)` signal so the panel can
+                   forward the answer to the worker.
+      * SNAPSHOT — small status row «step N: M objects created»
+      * VERIFY   — status row coloured by `ok` (green ✓ / red ✗)
+      * ERROR    — red border + monospace
+      * SUCCESS  — green border + bold
+    Falls back to MessageBubble visuals for USER / SYSTEM kinds.
+    """
+    answered = QtCore.Signal(str)        # emitted by QUESTION bubbles
+
+    def __init__(self, msg, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self._msg = msg
+        self._build()
+
+    def _build(self):
+        from ..core.message import MessageKind
+        kind = self._msg.kind
+        text = self._msg.text or ""
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+
+        if kind == MessageKind.COMMENT:
+            self._add_foldable_label(
+                layout, text, style="QLabel { font-size: 11px; font-style: italic; color: #555; }"
+            )
+            self.setStyleSheet(
+                "TypedBubble { background-color: transparent; border: none; "
+                "border-left: 2px solid #cbd5e1; }"
+            )
+            return
+
+        if kind == MessageKind.PLAN:
+            summary = QtWidgets.QLabel(
+                f"📋 План: {len(self._msg.data.get('parts', []))} part(s) — "
+                f"клик чтобы раскрыть"
+            )
+            summary.setStyleSheet("QLabel { font-weight: 600; font-size: 12px; }")
+            layout.addWidget(summary)
+            self._detail = QtWidgets.QPlainTextEdit(self)
+            import json
+            self._detail.setPlainText(json.dumps(self._msg.data, ensure_ascii=False, indent=2))
+            self._detail.setReadOnly(True)
+            self._detail.setMaximumHeight(220)
+            self._detail.setStyleSheet(
+                "QPlainTextEdit { background: #f8fafc; border: 1px solid #e2e8f0; "
+                "font-family: monospace; font-size: 10px; }"
+            )
+            self._detail.hide()
+            layout.addWidget(self._detail)
+            summary.mousePressEvent = lambda _e: (
+                self._detail.setVisible(not self._detail.isVisible())
+            )
+            self.setStyleSheet(
+                "TypedBubble { background-color: #f1f5f9; border: 1px solid #cbd5e1; "
+                "border-radius: 8px; }"
+            )
+            return
+
+        if kind == MessageKind.QUESTION:
+            label = QtWidgets.QLabel("❓ " + text, self)
+            label.setWordWrap(True)
+            label.setStyleSheet("QLabel { font-weight: 600; font-size: 12px; }")
+            layout.addWidget(label)
+            opts = (self._msg.data or {}).get("options")
+            if opts:
+                button_row = QtWidgets.QHBoxLayout()
+                button_row.setSpacing(6)
+                for opt in opts:
+                    btn = QtWidgets.QPushButton(opt, self)
+                    btn.setCursor(Qt.PointingHandCursor)
+                    btn.clicked.connect(
+                        lambda _checked=False, t=opt: self.answered.emit(t)
+                    )
+                    button_row.addWidget(btn)
+                button_row.addStretch(1)
+                layout.addLayout(button_row)
+            else:
+                edit = QtWidgets.QLineEdit(self)
+                edit.setPlaceholderText("Введите ответ и Enter")
+                edit.returnPressed.connect(
+                    lambda: self.answered.emit(edit.text().strip())
+                )
+                layout.addWidget(edit)
+            self.setStyleSheet(
+                "TypedBubble { background-color: #fefce8; "
+                "border: 1px solid #facc15; border-radius: 8px; }"
+            )
+            return
+
+        if kind == MessageKind.SNAPSHOT:
+            row = QtWidgets.QLabel(f"📸 {text}", self)
+            row.setStyleSheet(
+                "QLabel { font-size: 10px; color: #475569; font-family: monospace; }"
+            )
+            layout.addWidget(row)
+            self.setStyleSheet(
+                "TypedBubble { background-color: transparent; "
+                "border-left: 2px solid #94a3b8; }"
+            )
+            return
+
+        if kind == MessageKind.VERIFY:
+            ok = bool(self._msg.data.get("ok"))
+            mark = "✓" if ok else "✗"
+            color = "#16a34a" if ok else "#dc2626"
+            row = QtWidgets.QLabel(f"{mark} verify: {text}", self)
+            row.setStyleSheet(
+                f"QLabel {{ font-size: 11px; color: {color}; "
+                f"font-weight: 600; }}"
+            )
+            row.setWordWrap(True)
+            layout.addWidget(row)
+            self.setStyleSheet(
+                f"TypedBubble {{ background-color: transparent; "
+                f"border-left: 2px solid {color}; }}"
+            )
+            return
+
+        if kind == MessageKind.ERROR:
+            label = QtWidgets.QLabel("⚠ " + text, self)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            label.setStyleSheet(
+                "QLabel { font-size: 11px; color: #b91c1c; font-family: monospace; }"
+            )
+            layout.addWidget(label)
+            self.setStyleSheet(
+                "TypedBubble { background-color: #fef2f2; "
+                "border: 1px solid #fca5a5; border-radius: 6px; }"
+            )
+            return
+
+        if kind == MessageKind.SUCCESS:
+            label = QtWidgets.QLabel("✓ " + text, self)
+            label.setStyleSheet(
+                "QLabel { font-size: 12px; color: #15803d; font-weight: 700; }"
+            )
+            layout.addWidget(label)
+            self.setStyleSheet(
+                "TypedBubble { background-color: #f0fdf4; "
+                "border: 1px solid #86efac; border-radius: 8px; }"
+            )
+            return
+
+        # Fallback for USER / ANSWER / CODE / SYSTEM
+        self._add_foldable_label(layout, text)
+        if kind == MessageKind.USER or kind == MessageKind.ANSWER:
+            self.setStyleSheet(
+                "TypedBubble { background-color: #f4f4f4; "
+                "border: 1px solid #e0e0e0; border-radius: 12px; }"
+            )
+        else:
+            self.setStyleSheet(
+                "TypedBubble { background-color: transparent; "
+                "border-left: 2px solid #94a3b8; }"
+            )
+
+    def _add_foldable_label(self, layout, text: str, style: str | None = None) -> None:
+        """Sprint 6.0+ UX: long messages fold to a preview + «…» button.
+        Click expands. The label is selectable so users can copy text."""
+        need_fold = len(text) > FOLD_THRESHOLD_CHARS
+        self._fold_state = {"expanded": False, "full_text": text}
+        self._fold_label = QtWidgets.QLabel(self)
+        self._fold_label.setWordWrap(True)
+        self._fold_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        if style:
+            self._fold_label.setStyleSheet(style)
+        if need_fold:
+            preview = text[:FOLD_THRESHOLD_CHARS] + "…"
+            self._fold_label.setText(preview)
+            btn_row = QtWidgets.QHBoxLayout()
+            btn_row.setSpacing(4)
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.addStretch(1)
+            self._fold_btn = QtWidgets.QPushButton("…", self)
+            self._fold_btn.setFixedSize(28, 20)
+            self._fold_btn.setToolTip("Развернуть / Свернуть")
+            self._fold_btn.setStyleSheet(
+                "QPushButton { background: #f3f4f6; border: 1px solid #e5e7eb; "
+                "border-radius: 6px; font-size: 11px; }"
+            )
+            self._fold_btn.clicked.connect(self._toggle_fold)
+            btn_row.addWidget(self._fold_btn)
+            layout.addWidget(self._fold_label)
+            layout.addLayout(btn_row)
+        else:
+            self._fold_label.setText(text)
+            layout.addWidget(self._fold_label)
+
+    def _toggle_fold(self):
+        s = getattr(self, "_fold_state", None)
+        if not s or not hasattr(self, "_fold_label"):
+            return
+        if s["expanded"]:
+            self._fold_label.setText(s["full_text"][:FOLD_THRESHOLD_CHARS] + "…")
+            self._fold_btn.setText("…")
+        else:
+            self._fold_label.setText(s["full_text"])
+            self._fold_btn.setText("−")
+        s["expanded"] = not s["expanded"]
+
+
 class StatusDot(QtWidgets.QLabel):
     """A small colored dot indicating thinking/idle/error state."""
 

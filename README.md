@@ -7,7 +7,14 @@ AI‑powered CAD assistant for FreeCAD.
 For installation and development instructions, see [DEV_SETUP.md](DEV_SETUP.md).  
 For architecture and sprint plans, see the `doc/` directory.
 
-Current implementation status (Sprint 5.22, May 2026):
+Current implementation status (Sprint 6.0, May 2026):
+
+- Plan-driven multi-pass agent architecture (Sprint 6.0 MVP): the agent now extracts a structured `DesignIntent` from the user prompt, asks for clarification on critical missing info, plans the assembly part-by-part, executes each step independently with a per-step contract verifier, and persists the plan in history for follow-up requests. The legacy single-pass `agent.run` is preserved untouched; v2 is opt-in via `headless_dogfood.py --use-v2` (and a future Settings toggle in the UI).
+- Generic feature detectors replace per-class anti-patterns: `axle_hole`, `thread`, `hex_section`, `hollow`, `stepped_axial`, `bbox_length`, `long_axial` are domain-agnostic — adding a new engineering class (I-beam, turbine blade, manifold) needs zero new validator code.
+- 13× system-prompt token reduction: the v2 prompt is 12.9 k chars (≈ 1.6 k input tokens) vs the legacy 69 k chars (≈ 21 k input tokens), making each LLM call ~13× cheaper.
+- Multi-channel response parser understands `<plan>`, `<comment>`, `<question type=… options=…>` and `<code step="N">` tags so the LLM can ask clarifying questions, narrate its rationale, and emit code for one step at a time.
+
+Previous status (Sprint 5.22, May 2026):
 - LLM integration (OpenAI, Anthropic) with configurable provider, model, and API key management
 - Multi‑step Python code execution from LLM responses with rollback on error
 - Secure API key storage via system keyring, environment variables, or session‑only use
