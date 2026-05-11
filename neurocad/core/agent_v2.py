@@ -104,6 +104,12 @@ class AgentV2Callbacks:
     on_verify_step: Callable[[dict, int], dict] | None = None
     on_verify_whole: Callable[[dict], dict] | None = None
     on_fea:         Callable[[dict], dict] | None = None    # Sprint 6.1 FEA bridge
+    # Sprint 6.3: between step-retries, ask the host to delete the objects
+    # the failed attempt left behind. Without this, leftover objects from
+    # attempt N are still in doc.Objects when attempt N+1 runs, and
+    # `_find_part_object` substring match can return the stale solid box
+    # instead of the fresh hollow geometry — verify keeps failing forever.
+    on_rollback:    Callable[[list[str]], None] = lambda _names: None
 
 
 @dataclass
@@ -130,9 +136,53 @@ class AgentV2Result:
 # Internals
 # ---------------------------------------------------------------------------
 
-_MAX_PER_STEP_RETRIES = 3
+# Sprint 6.3 — progress-aware retry budget.
+#
+# A fixed 3-attempt cap was too tight: a step where the LLM was visibly
+# converging (8 → 4 → 2 verify failures) would be killed before reaching
+# success. A fixed «large» cap is wasteful in the opposite case — when
+# the model is stuck repeating the same mistake, every extra attempt
+# burns tokens for nothing.
+#
+# New policy:
+#   - Continue while `len(report.failures)` strictly *decreases* between
+#     attempts (= the LLM is learning from the verifier diff).
+#   - Stop after `_PROGRESS_PATIENCE` consecutive non-improving attempts
+#     (= stuck; further retries unlikely to help).
+#   - Hard safety cap `_MAX_PER_STEP_RETRIES_HARD` so a catastrophically
+#     misspecified step doesn't burn the entire token budget.
+#   - Exec failures are treated as «infinitely many» verify failures —
+#     going from exec-fail to verify-fail(5) counts as progress.
+_MAX_PER_STEP_RETRIES_HARD = 12         # absolute ceiling, even if progressing
+_PROGRESS_PATIENCE = 2                   # consecutive stalls → give up
+_EXEC_FAIL_SENTINEL = 10**6              # exec-fail counts as "lots of failures"
+
 _MAX_CLARIFY_ROUNDS = 3
 _MAX_REPLAN_ROUNDS = 1
+
+
+def _update_stall_counter(
+    history: list[int],
+    new_count: int,
+    consecutive_stalls: int,
+) -> tuple[int, str | None]:
+    """Append `new_count` to `history`; return (stalls, reason).
+
+    Progress is defined as a STRICTLY decreasing failure count between
+    consecutive attempts. Equal counts or an increase counts as a stall.
+    Reason is one of: "first_attempt", "progress", "stall", or
+    "regression" (failures went up).
+    """
+    history.append(new_count)
+    if len(history) < 2:
+        return 0, "first_attempt"
+    prev = history[-2]
+    cur = history[-1]
+    if cur < prev:
+        return 0, "progress"
+    if cur > prev:
+        return consecutive_stalls + 1, "regression"
+    return consecutive_stalls + 1, "stall"
 
 
 def _llm_call(adapter, history: History, system: str, *, purpose: str = "") -> str:
@@ -320,16 +370,27 @@ def _execute_single_step(
     callbacks: AgentV2Callbacks,
     sink: list[Message],
 ) -> StepResult:
-    """Run one plan step with up to _MAX_PER_STEP_RETRIES retries.
+    """Run one plan step with a progress-aware retry budget.
 
-    Each retry sends the verifier diff back to the LLM as a USER message
-    and asks for a fresh <code step="N"> block (no <plan> re-emission).
+    Stops when ANY of:
+      - verifier returns ok=True (success),
+      - `_PROGRESS_PATIENCE` consecutive attempts failed to reduce the
+        verify-failure count (stuck),
+      - `_MAX_PER_STEP_RETRIES_HARD` attempts have been used (safety cap),
+      - the user cancelled (via callbacks.on_exec_needed → 'Cancelled').
+
+    Each retry sends the verifier diff back to the LLM and asks for a
+    fresh <code step="N"> block.
     """
     code_msg = initial_code_msg
     attempts = 0
     last_error: str | None = None
     last_new_objects: list[str] = []
     last_verify_report: dict = {}
+    # Progress tracking — see _MAX_PER_STEP_RETRIES_HARD doc block.
+    failures_history: list[int] = []
+    consecutive_stalls = 0
+    stall_reason: str | None = None
     audit_log(
         "agent_v2_step_start",
         {"step_idx": step_idx, "part_name": part_name,
@@ -337,9 +398,11 @@ def _execute_single_step(
         correlation_id=get_correlation_id(),
     )
 
-    for attempt in range(_MAX_PER_STEP_RETRIES):
+    for attempt in range(_MAX_PER_STEP_RETRIES_HARD):
         attempts = attempt + 1
-        callbacks.on_attempt(attempts, _MAX_PER_STEP_RETRIES)
+        # `on_attempt(n, max)` — `max` shown in the UI is the SAFETY cap;
+        # most steps will stop earlier due to progress/success/stall.
+        callbacks.on_attempt(attempts, _MAX_PER_STEP_RETRIES_HARD)
         callbacks.on_status(
             f"executing step {step_idx} ({part_name}) attempt {attempts}"
         )
@@ -378,6 +441,31 @@ def _execute_single_step(
         last_new_objects = new_objects
         if not ok:
             last_error = error or "exec failed"
+            # Progress tracking: exec failure → sentinel "lots of failures".
+            # Going exec-fail → verify-fail(5) counts as progress next loop.
+            consecutive_stalls, stall_reason = _update_stall_counter(
+                failures_history, _EXEC_FAIL_SENTINEL, consecutive_stalls,
+            )
+            # Roll back whatever survived the failed attempt. Even when the
+            # FreeCAD transaction was aborted, the executor's `new_objects`
+            # may contain pre-commit additions on hosts that don't expose
+            # transactions (headless harness). Best-effort — host ignores
+            # unknown names. Reverse so consumers go before producers.
+            if new_objects:
+                try:
+                    callbacks.on_rollback(list(reversed(new_objects)))
+                    audit_log(
+                        "agent_v2_step_rollback",
+                        {"step_idx": step_idx, "part_name": part_name,
+                         "reason": "exec_failed",
+                         "deleted": new_objects[:50]},
+                        correlation_id=get_correlation_id(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log_warn("agent_v2.rollback", "callback raised",
+                             error=str(exc))
+            if consecutive_stalls >= _PROGRESS_PATIENCE:
+                break
             history.add(
                 Role.FEEDBACK,
                 f"Step {step_idx} ({part_name}) exec error: {last_error}. "
@@ -420,17 +508,48 @@ def _execute_single_step(
                 new_objects=new_objects,
                 verify_report=last_verify_report,
             )
-        # Verify failed → re-prompt
+        # Verify failed → track progress, roll back, then re-prompt
+        # (unless we've stalled for `_PROGRESS_PATIENCE` attempts).
+        n_failures = len(report.failures)
+        consecutive_stalls, stall_reason = _update_stall_counter(
+            failures_history, n_failures, consecutive_stalls,
+        )
+        # Without rollback, attempt N+1's verifier still sees attempt N's
+        # solid-box leftover and reports density=0.95 even after the LLM
+        # correctly emits a hollow caged structure.
+        if new_objects:
+            try:
+                callbacks.on_rollback(list(reversed(new_objects)))
+                audit_log(
+                    "agent_v2_step_rollback",
+                    {"step_idx": step_idx, "part_name": part_name,
+                     "reason": "verify_failed",
+                     "deleted": new_objects[:50],
+                     "first_failure": (
+                         f"{report.failures[0].part}.{report.failures[0].feature_kind}"
+                         if report.failures else ""
+                     )},
+                    correlation_id=get_correlation_id(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log_warn("agent_v2.rollback", "callback raised",
+                         error=str(exc))
+        last_error = f"verify failed: {report.short_summary()}"
+        if consecutive_stalls >= _PROGRESS_PATIENCE:
+            break
         feedback = report.to_feedback()
         history.add(Role.FEEDBACK, feedback)
         code_msg = None
-        last_error = f"verify failed: {report.short_summary()}"
     audit_log(
         "agent_v2_step_done",
         {"step_idx": step_idx, "part_name": part_name,
          "ok": False, "attempts": attempts,
          "new_objects": last_new_objects[:50],
-         "error": (last_error or "")[:240]},
+         "error": (last_error or "")[:240],
+         "failures_history": failures_history[:30],
+         "stall_reason": stall_reason or (
+             "safety_cap_hit" if attempts >= _MAX_PER_STEP_RETRIES_HARD else None
+         )},
         correlation_id=get_correlation_id(),
     )
     return StepResult(

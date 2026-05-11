@@ -94,6 +94,22 @@ def _worker_main() -> int:
             doc = FreeCAD.newDocument("Dogfood")
             reply({"event": "reset_ok", "doc": doc.Name})
             continue
+        if cmd == "remove_objects":
+            # Sprint 6.3: best-effort cleanup between v2 step retries.
+            names = list(req.get("names") or [])
+            removed = []
+            for name in names:
+                try:
+                    if doc.getObject(name) is not None:
+                        doc.removeObject(name)
+                        removed.append(name)
+                except Exception:
+                    # Don't let a single bad name kill the cleanup pass —
+                    # the agent will retry geometry anyway.
+                    pass
+            reply({"event": "removed", "removed": removed,
+                   "requested": len(names)})
+            continue
         if cmd == "exec":
             code = req.get("code", "")
             # Capture every block to /tmp for post-mortem review of failures.
@@ -727,6 +743,13 @@ class WorkerProxy:
         contract_verifier on the live doc, get a serializable report."""
         return self._rpc({"cmd": "verify_intent", "intent": intent_dict},
                           timeout_s=180.0)
+
+    def remove_objects(self, names: list[str]) -> dict:
+        """Sprint 6.3: ask the worker to delete listed objects from the doc.
+        Used between v2 step retries — leftover solid from attempt N
+        otherwise still matches the substring lookup in the verifier."""
+        return self._rpc({"cmd": "remove_objects", "names": list(names)},
+                          timeout_s=30.0)
 
     def run_fea(self, payload: dict) -> dict:
         """Sprint 6.1: run structural analysis on the worker doc."""
@@ -1918,10 +1941,19 @@ def _run_one_v2(
             "Не задавай больше вопросов — сразу выдай <plan> и <code>."
         )
 
+    def on_rollback(names: list[str]) -> None:
+        try:
+            proxy.remove_objects(names)
+        except Exception as exc:  # noqa: BLE001
+            # Best-effort — next attempt's verifier will still be slightly
+            # stale but not catastrophically wrong; never block the run.
+            print(f"  [rollback] bridge error: {exc!r}", file=sys.stderr)
+
     callbacks = AgentV2Callbacks(
         on_exec_needed=on_exec_needed,
         on_verify_step=on_verify_step,
         on_question=on_question,
+        on_rollback=on_rollback,
     )
     start = time.monotonic()
     proxy.reset()

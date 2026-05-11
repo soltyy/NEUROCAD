@@ -58,6 +58,7 @@ class LLMWorkerV2:
         on_verify_request: Callable[[dict, int], None],
         on_done: Callable[[object], None],
         on_error: Callable[[str], None],
+        on_rollback_request: Callable[[list[str]], None] | None = None,
     ):
         self._on_message = on_message
         self._on_status = on_status
@@ -65,6 +66,7 @@ class LLMWorkerV2:
         self._on_exec_needed = on_exec_needed
         self._on_question_request = on_question_request
         self._on_verify_request = on_verify_request
+        self._on_rollback_request = on_rollback_request
         self._on_done = on_done
         self._on_error = on_error
 
@@ -80,6 +82,8 @@ class LLMWorkerV2:
         # contract_verifier must run on the main thread).
         self._verify_event = threading.Event()
         self._verify_result: dict | None = None
+        # Sprint 6.3 rollback handoff (doc.removeObject is main-thread only).
+        self._rollback_event = threading.Event()
         self._running = False
         self._dispatcher = _MainThreadDispatcher()
 
@@ -90,6 +94,7 @@ class LLMWorkerV2:
         self._cancelled.clear()
         self._exec_event.clear()
         self._answer_event.clear()
+        self._rollback_event.clear()
         self._exec_result = None
         self._answer_text = None
         self._running = True
@@ -108,6 +113,7 @@ class LLMWorkerV2:
         self._exec_event.set()
         self._answer_event.set()           # unblock any pending question
         self._verify_event.set()           # unblock any pending verifier
+        self._rollback_event.set()         # unblock any pending rollback
         self._running = False
 
     def is_running(self) -> bool:
@@ -185,6 +191,31 @@ class LLMWorkerV2:
                            "reason": "verify returned no result"}],
         }
 
+    # ------- rollback handoff (Sprint 6.3) ---------------------------------
+
+    def receive_rollback_done(self):
+        """UI calls this once `doc.removeObject` has been called on every
+        name (best-effort, errors swallowed). Worker resumes the retry."""
+        log_info("worker_v2.rollback_done", "main thread finished cleanup")
+        self._rollback_event.set()
+
+    def _request_rollback(self, names: list[str]) -> None:
+        """Park worker thread until main-thread cleanup of `names` completes.
+        Silently no-op if no rollback callback was provided (e.g. unit tests)."""
+        if not names or self._on_rollback_request is None:
+            return
+        if self._cancelled.is_set():
+            return
+        self._rollback_event.clear()
+        self._schedule_main(self._on_rollback_request, list(names))
+        if not self._rollback_event.wait(timeout=30.0):
+            log_warn("worker_v2.rollback",
+                     "timed out waiting for main-thread cleanup",
+                     names=names[:10])
+        # Whether we got the signal or timed out, keep going — the next
+        # attempt's exec will still run, and verifier substring match
+        # will at worst be slightly stale (better than a hung worker).
+
     def _request_question(self, q_msg: Message) -> str | None:
         if self._cancelled.is_set():
             return None
@@ -213,6 +244,7 @@ class LLMWorkerV2:
                 on_exec_needed=self._request_exec,
                 on_question=self._request_question,
                 on_verify_step=self._request_verify_step,
+                on_rollback=self._request_rollback,
             )
             result = agent_v2_run(text, doc, adapter, history, callbacks)
             if self._cancelled.is_set():

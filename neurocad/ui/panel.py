@@ -399,18 +399,32 @@ class CopilotPanel(QtWidgets.QDockWidget):
         self._queue_scroll_to_bottom()
 
     def _update_user_bubble_width(self, bubble):
-        """Set maximum width of user bubble.
+        """Set width of a user bubble so long messages don't wrap into a
+        narrow column on the right.
 
-        Sprint 6.0+ UX fix: previously hard-coded 80 % of the current viewport
-        width — which at submit-time was often the dock's initial small width
-        before the user enlarged it, leaving bubbles permanently narrow.
-        Now scales with the *whole* panel width (more reliable than viewport
-        during initial layout) and caps at 92 % with a 320-px floor.
+        `setMaximumWidth` alone is just a cap: QLabel(setWordWrap=True)
+        shrinks to its smallest-acceptable wrapped width, which on long
+        messages produces the «1 word per line» effect the user sees.
+        We also fix MIN width to either (a) natural text width + padding,
+        or (b) the max width — whichever is smaller — so short messages
+        stay compact and long ones fill the available column.
         """
         ref_width = max(self._scroll_area.viewport().width(),
                         self.widget().width())
         max_width = max(320, int(ref_width * 0.92))
         bubble.setMaximumWidth(max_width)
+        try:
+            label = getattr(bubble, "_label", None)
+            if label is not None:
+                fm = label.fontMetrics()
+                # ~40 px reserved for bubble padding (left+right margin + border).
+                natural = fm.horizontalAdvance(getattr(bubble, "_text", "") or "") + 40
+                target_min = min(max_width, max(120, natural))
+                bubble.setMinimumWidth(target_min)
+        except Exception:  # noqa: BLE001
+            # Falling back to max-only is acceptable — the bug it leaves
+            # behind is only «slightly narrower bubble», not broken layout.
+            pass
 
     def _refresh_user_bubble_widths(self):
         """On panel resize, re-apply max-width to every existing user bubble
@@ -583,6 +597,7 @@ class CopilotPanel(QtWidgets.QDockWidget):
                 on_exec_needed=self._on_exec_needed,
                 on_question_request=self._on_question_request,
                 on_verify_request=self._on_verify_request,
+                on_rollback_request=self._on_rollback_request,
                 on_done=self._on_worker_done,
                 on_error=self._on_worker_error,
             )
@@ -678,6 +693,10 @@ class CopilotPanel(QtWidgets.QDockWidget):
                 old.setParent(None)
                 old.deleteLater()
         self._pin_layout.addWidget(bubble)
+        # Container may have been hidden by an earlier _unpin_plan() call —
+        # without an explicit show() the new plan would be invisible despite
+        # being correctly inserted. Showing here is also no-op on first plan.
+        pin.show()
 
     def _unpin_plan(self) -> None:
         """Move the pinned plan into the regular scroll history (if any)
@@ -757,6 +776,30 @@ class CopilotPanel(QtWidgets.QDockWidget):
                                       "reason": f"verifier raised: {exc!r}"}]}
         if self._worker is not None and isinstance(self._worker, LLMWorkerV2):
             self._worker.receive_verify_result(result)
+
+    def _on_rollback_request(self, names: list[str]) -> None:
+        """Sprint 6.3: delete the objects a failed step attempt left behind.
+        Runs on the Qt MAIN thread (FreeCAD requires it). Best-effort —
+        a missing/already-removed name is not an error. Caller (v2 agent)
+        passes names in consumer-first order to minimize recompute noise."""
+        log_info("panel.rollback", "removing objects from doc", count=len(names),
+                 names_preview=names[:10])
+        try:
+            doc = get_active_document()
+            if doc is None:
+                log_warn("panel.rollback", "no active doc — skipping cleanup")
+            else:
+                for name in names:
+                    try:
+                        if doc.getObject(name) is not None:
+                            doc.removeObject(name)
+                    except Exception as exc:  # noqa: BLE001
+                        log_warn("panel.rollback",
+                                 "removeObject raised — skipping",
+                                 name=name, error=str(exc))
+        finally:
+            if self._worker is not None and isinstance(self._worker, LLMWorkerV2):
+                self._worker.receive_rollback_done()
 
     def _on_chunk(self, chunk: str):
         """Append a chunk of LLM response to the assistant message."""
@@ -869,10 +912,12 @@ class CopilotPanel(QtWidgets.QDockWidget):
         else:
             self._add_message("feedback",
                               f"Success! Created {len(new_objects)} object(s).")
-        # Sprint 6.0+ UX: when the run finishes, move the pinned plan into
-        # the regular history so the chat stays in chronological order for
-        # future requests.
-        self._unpin_plan()
+        # Sprint 6.3 UX: keep the plan pinned at the top after the run
+        # ends — it stays visible as a reference until the NEXT request
+        # replaces it (via _pin_plan_bubble). Previously we moved the
+        # plan into the scroll bottom on done; users complained the plan
+        # «slid to the bottom after a few messages». The new plan would
+        # also be added to a hidden container and silently disappear.
         if hasattr(self, "_current_assistant_bubble"):
             del self._current_assistant_bubble
 

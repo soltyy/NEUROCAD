@@ -179,6 +179,241 @@ def test_verify_failure_triggers_retry():
     assert result.steps[0].attempts == 2  # one retry
 
 
+def test_step_rollback_called_between_attempts():
+    """Sprint 6.3 regression: when verify fails, the agent must ask the
+    host to delete that attempt's objects before the next attempt runs.
+
+    Symptom in production (audit 2026-05-11): step «Veranda» retried 3×;
+    each attempt created `Veranda`, `Veranda001`, `Veranda002` (FreeCAD
+    auto-rename), but only the latest had the correct hollow caged shape.
+    Verifier's substring lookup returned the stale solid `Veranda001`
+    first → contract failed forever. Rollback wipes them between tries."""
+    plan = json.dumps(_sample_plan_dict())
+    responses = [
+        f"<plan>{plan}</plan>\n<code step=\"1\">first=1</code>",
+        '<code step="1">corrected=1</code>',
+    ]
+    adapter = _make_adapter(responses)
+    # First attempt fails verify; second succeeds.
+    call_count = {"n": 0}
+    box = MagicMock()
+    bb = MagicMock()
+    bb.XLength=100; bb.YLength=100; bb.ZLength=100  # initial: wrong
+    bb.XMin=0; bb.XMax=100; bb.YMin=0; bb.YMax=100; bb.ZMin=0; bb.ZMax=100
+    box.Shape = MagicMock()
+    box.Shape.BoundBox = bb
+    box.Shape.Volume = 1e6
+    box.Name = "Cube"; box.InList = []
+    doc = _make_doc()
+    doc.getObject = MagicMock(return_value=box)
+
+    def _exec(code, step):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {"ok": True, "new_objects": ["Cube", "Cube_Helper"]}
+        # Second attempt: corrected bbox, verify passes
+        bb.XLength = 20.0; bb.YLength = 20.0; bb.ZLength = 20.0
+        box.Shape.Volume = 8000
+        return {"ok": True, "new_objects": ["Cube"]}
+
+    rollback_calls: list[list[str]] = []
+    cb = AgentV2Callbacks(
+        on_exec_needed=_exec,
+        on_rollback=lambda names: rollback_calls.append(list(names)),
+    )
+    result = run("куб 20x20x20", doc, adapter, History(), cb)
+    assert result.ok is True
+    assert result.steps[0].attempts == 2
+    # Rollback fired exactly once — between attempt 1 and attempt 2.
+    assert len(rollback_calls) == 1, (
+        f"expected one rollback call, got {len(rollback_calls)}: {rollback_calls}"
+    )
+    # Names match attempt 1's new_objects, reversed (consumers first).
+    assert rollback_calls[0] == ["Cube_Helper", "Cube"]
+
+
+def test_progress_continues_beyond_three_attempts():
+    """Sprint 6.3 progress-aware retry: when verify-failure count keeps
+    DECREASING across attempts, the agent must keep retrying past the
+    old fixed cap of 3. This is the «3 попытки не предел» case —
+    a converging step should run until success or stall.
+
+    Scenario: a verifier returns 5 → 3 → 1 → 0 failures across attempts.
+    Under the old 3-attempt cap, attempt 4 would never happen and the
+    step would die one step away from success.
+    """
+    plan = json.dumps(_sample_plan_dict())
+    # Five LLM responses — initial + 4 retries. Only the first carries plan.
+    responses = [
+        f"<plan>{plan}</plan>\n<code step=\"1\">attempt1=1</code>",
+        '<code step="1">attempt2=1</code>',
+        '<code step="1">attempt3=1</code>',
+        '<code step="1">attempt4=1</code>',
+    ]
+    adapter = _make_adapter(responses)
+    doc = _make_doc()
+
+    # Verifier returns decreasing failure counts then success.
+    verify_calls = {"n": 0}
+    failure_schedule = [5, 3, 1, 0]   # n_failures per attempt
+
+    def _on_verify_step(intent_dict, step_idx):
+        n = failure_schedule[verify_calls["n"]]
+        verify_calls["n"] += 1
+        if n == 0:
+            return {"ok": True, "failures": [], "detail": []}
+        return {
+            "ok": False,
+            "failures": [{"part": "Cube", "feature": "bbox_length",
+                          "reason": f"failure {i}", "measured": {}}
+                          for i in range(n)],
+            "detail": [],
+        }
+
+    cb = AgentV2Callbacks(
+        on_exec_needed=lambda c, s: {"ok": True, "new_objects": ["Cube"]},
+        on_verify_step=_on_verify_step,
+        on_rollback=lambda _names: None,
+    )
+    result = run("куб", doc, adapter, History(), cb)
+    assert result.ok is True, f"expected success, got: {result.error}"
+    # Four attempts (5→3→1→0) — would have been killed at 3 under the
+    # old cap.
+    assert result.steps[0].attempts == 4
+    assert verify_calls["n"] == 4
+
+
+def test_no_progress_stalls_after_two_consecutive_stalls():
+    """Sprint 6.3: when failure count stays the same (or grows) for two
+    consecutive attempts after the first, the step is declared stuck.
+    Without this, a fundamentally misspecified part would burn the full
+    safety cap (12 attempts) emitting the same bad verifier diff."""
+    plan = json.dumps(_sample_plan_dict())
+    responses = [
+        f"<plan>{plan}</plan>\n<code step=\"1\">a=1</code>",
+        '<code step="1">b=1</code>',
+        '<code step="1">c=1</code>',
+        '<code step="1">d=1</code>',
+        '<code step="1">e=1</code>',
+    ]
+    adapter = _make_adapter(responses)
+    doc = _make_doc()
+
+    # Verifier returns the SAME failure count forever — no progress.
+    def _on_verify_step(intent_dict, step_idx):
+        return {
+            "ok": False,
+            "failures": [{"part": "Cube", "feature": "bbox_length",
+                          "reason": "stuck", "measured": {}}],
+            "detail": [],
+        }
+
+    cb = AgentV2Callbacks(
+        on_exec_needed=lambda c, s: {"ok": True, "new_objects": ["Cube"]},
+        on_verify_step=_on_verify_step,
+        on_rollback=lambda _names: None,
+    )
+    result = run("куб", doc, adapter, History(), cb)
+    assert result.ok is False
+    # attempt 1: first_attempt (stalls=0)
+    # attempt 2: stall (stalls=1)
+    # attempt 3: stall (stalls=2 ≥ _PROGRESS_PATIENCE) → break
+    assert result.steps[0].attempts == 3, (
+        f"expected 3 attempts before stall-out, got {result.steps[0].attempts}"
+    )
+    assert "verify failed" in (result.steps[0].error or "").lower()
+
+
+def test_regression_in_failures_also_counts_as_stall():
+    """If the LLM makes things WORSE (failure count grows), that's still
+    a stall — we don't reward regressions with more retries."""
+    plan = json.dumps(_sample_plan_dict())
+    responses = [
+        f"<plan>{plan}</plan>\n<code step=\"1\">a=1</code>",
+        '<code step="1">b=1</code>',
+        '<code step="1">c=1</code>',
+        '<code step="1">d=1</code>',
+    ]
+    adapter = _make_adapter(responses)
+    doc = _make_doc()
+
+    failure_schedule = [2, 3, 4, 5]
+    idx = {"n": 0}
+
+    def _on_verify_step(intent_dict, step_idx):
+        n = failure_schedule[idx["n"]]
+        idx["n"] += 1
+        return {
+            "ok": False,
+            "failures": [{"part": "Cube", "feature": "bbox_length",
+                          "reason": f"#{i}", "measured": {}}
+                          for i in range(n)],
+            "detail": [],
+        }
+
+    cb = AgentV2Callbacks(
+        on_exec_needed=lambda c, s: {"ok": True, "new_objects": ["Cube"]},
+        on_verify_step=_on_verify_step,
+        on_rollback=lambda _names: None,
+    )
+    result = run("куб", doc, adapter, History(), cb)
+    assert result.ok is False
+    assert result.steps[0].attempts == 3   # two regressions → stop
+
+
+def test_update_stall_counter_helper():
+    """Direct unit test of the helper — easy to reason about."""
+    from neurocad.core.agent_v2 import _update_stall_counter
+    hist: list[int] = []
+    s, r = _update_stall_counter(hist, 5, 0)
+    assert hist == [5] and s == 0 and r == "first_attempt"
+    s, r = _update_stall_counter(hist, 3, s)
+    assert hist == [5, 3] and s == 0 and r == "progress"
+    s, r = _update_stall_counter(hist, 3, s)
+    assert hist == [5, 3, 3] and s == 1 and r == "stall"
+    s, r = _update_stall_counter(hist, 4, s)
+    assert hist == [5, 3, 3, 4] and s == 2 and r == "regression"
+
+
+def test_exec_error_triggers_rollback():
+    """Sprint 6.3: even an exec-failed attempt can leave half-created
+    objects (when the host doesn't expose FreeCAD transactions, e.g. the
+    headless harness). Roll them back too."""
+    plan = json.dumps(_sample_plan_dict())
+    responses = [
+        f"<plan>{plan}</plan>\n<code step=\"1\">broken</code>",
+        '<code step="1">fixed=1</code>',
+    ]
+    adapter = _make_adapter(responses)
+    box = MagicMock()
+    bb = MagicMock()
+    bb.XLength=20; bb.YLength=20; bb.ZLength=20
+    bb.XMin=0; bb.XMax=20; bb.YMin=0; bb.YMax=20; bb.ZMin=0; bb.ZMax=20
+    box.Shape = MagicMock()
+    box.Shape.BoundBox = bb
+    box.Shape.Volume = 8000
+    box.Name = "Cube"; box.InList = []
+    doc = _make_doc()
+    doc.getObject = MagicMock(return_value=box)
+    call_count = {"n": 0}
+
+    def _exec(code, step):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {"ok": False, "new_objects": ["HalfCube"], "error": "boom"}
+        return {"ok": True, "new_objects": ["Cube"]}
+
+    rollback_calls: list[list[str]] = []
+    cb = AgentV2Callbacks(
+        on_exec_needed=_exec,
+        on_rollback=lambda names: rollback_calls.append(list(names)),
+    )
+    result = run("куб", doc, adapter, History(), cb)
+    assert result.ok is True
+    assert result.steps[0].attempts == 2
+    assert rollback_calls == [["HalfCube"]]
+
+
 def test_exec_error_triggers_retry():
     """Executor returns error → LLM re-prompted → retry."""
     plan = json.dumps(_sample_plan_dict())
